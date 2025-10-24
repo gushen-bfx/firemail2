@@ -1,16 +1,71 @@
-# 数据库设计文档
+# 数据库设计与配置文档
 
 ## 概述
 
-花火邮箱助手使用SQLite作为数据存储引擎，以提供轻量级且易于部署的数据库解决方案。数据库设计遵循关系型数据库范式，保证数据完整性和查询效率。
+花火邮箱助手的数据访问层支持三种主流的关系型数据库引擎：SQLite、PostgreSQL 与 MySQL。默认情况下系统仍以 SQLite 的文件数据库作为轻量级依赖，同时也可以通过环境变量切换至外部的 PostgreSQL 或 MySQL 服务。
+
+为了保护敏感数据，项目在数据库读写链路中内置了对称加密：邮箱账号密码、OAuth 凭据和附件内容都会在写入数据库前自动加密，读取时再透明解密。加密密钥采用 Fernet 算法（AES-128 + HMAC）管理，可通过环境变量或本地持久化文件进行配置。
+
+本章节将介绍数据库配置方法，并在后续章节展示核心表结构。有关部署命令示例可参考《docs/部署指南.md》的“环境变量配置”章节。
+
+## 数据库配置
+
+### 1. 选择数据库类型
+
+后端通过 `DB_TYPE` 环境变量决定使用的数据库驱动，取值说明如下：
+
+| 取值 | 说明 | 默认端口 |
+| ---- | ---- | -------- |
+| `sqlite` | 使用本地 SQLite 文件数据库，位于 `backend/data/huohuo_email.db` | N/A |
+| `postgresql` | 连接到 PostgreSQL 服务器 | 5432 |
+| `mysql` | 连接到 MySQL / MariaDB 服务器 | 3306 |
+
+若未设置 `DB_TYPE`，系统默认为 `sqlite`。
+
+### 2. 连接字符串配置
+
+可以通过以下两种方式指定 PostgreSQL / MySQL 的连接信息：
+
+1. **完整连接字符串**：设置 `DB_URL` 环境变量，例如：
+
+   ```bash
+   export DB_TYPE=postgresql
+   export DB_URL=postgresql+psycopg://username:password@db-host:5432/firemail
+   ```
+
+2. **分段配置**：分别设置 `DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`，系统会自动拼接连接字符串：
+
+   ```bash
+   export DB_TYPE=mysql
+   export DB_HOST=127.0.0.1
+   export DB_PORT=3306
+   export DB_NAME=firemail
+   export DB_USER=firemail
+   export DB_PASSWORD=change_me
+   ```
+
+当同时设置了 `DB_URL` 与分段变量时，优先使用 `DB_URL`。
+
+### 3. 加密密钥管理
+
+敏感字段使用 Fernet 对称加密。密钥优先来源于 `DB_ENCRYPTION_KEY` 环境变量，需提供 32 字节的 URL Safe Base64 字符串。如果环境变量未配置，程序会在 `backend/data/db_encryption.key` 中自动生成并持久化密钥文件。
+
+部署在多实例环境时，需要保证各实例使用相同密钥，可将密钥文件挂载为共享卷或统一设置环境变量。
+
+### 4. 连接池与迁移
+
+PostgreSQL/MySQL 驱动默认启用了 SQLAlchemy 的连接池管理，生产环境可根据需求调整 `DB_POOL_SIZE`、`DB_POOL_TIMEOUT` 等高级参数（若未设置则使用默认值）。首次启动时程序会自动创建缺失的表结构，目前无需额外的迁移工具。
 
 ## 数据库架构
 
 ### 技术选型
 
-- **数据库引擎**：SQLite 3
-- **存储位置**：本地文件存储于 `backend/data/huohuo_email.db`
-- **访问方式**：Python sqlite3 模块，以单例模式实现数据库连接管理
+- **数据库引擎**：SQLite 3 / PostgreSQL 14+ / MySQL 8+（兼容 MariaDB）
+- **存储位置**：
+  - SQLite：`backend/data/huohuo_email.db`
+  - PostgreSQL/MySQL：由外部数据库服务器维护
+- **访问方式**：SQLAlchemy + 对应数据库驱动（SQLite 原生驱动、psycopg、mysqlclient/PyMySQL）
+- **连接管理**：统一的数据库会话工厂，支持线程安全访问与连接池复用
 
 ### 表结构概述
 
@@ -92,14 +147,14 @@ CREATE TABLE IF NOT EXISTS emails (
 | id | INTEGER | 主键，自增 |
 | user_id | INTEGER | 外键，关联users表 |
 | email | TEXT | 邮箱地址 |
-| password | TEXT | 邮箱密码 |
+| password | TEXT | 邮箱密码（已加密） |
 | mail_type | TEXT | 邮箱类型，默认outlook |
 | server | TEXT | 邮件服务器地址（IMAP类型使用） |
 | port | INTEGER | 邮件服务器端口（IMAP类型使用） |
 | use_ssl | INTEGER | 是否使用SSL（0否，1是） |
 | client_id | TEXT | OAuth客户端ID |
-| refresh_token | TEXT | OAuth刷新令牌 |
-| access_token | TEXT | OAuth访问令牌 |
+| refresh_token | TEXT | OAuth刷新令牌（已加密） |
+| access_token | TEXT | OAuth访问令牌（已加密） |
 | last_check_time | TIMESTAMP | 上次检查时间 |
 | enable_realtime_check | INTEGER | 是否启用实时检查（0否，1是） |
 | created_at | TIMESTAMP | 创建时间 |
@@ -139,7 +194,7 @@ CREATE TABLE IF NOT EXISTS mail_records (
 | subject | TEXT | 邮件主题 |
 | sender | TEXT | 发件人 |
 | received_time | TIMESTAMP | 接收时间 |
-| content | TEXT | 邮件内容 |
+| content | TEXT | 邮件内容（已加密） |
 | folder | TEXT | 邮件文件夹 |
 | created_at | TIMESTAMP | 创建时间 |
 
@@ -158,7 +213,6 @@ CREATE TABLE IF NOT EXISTS system_config (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key TEXT UNIQUE NOT NULL,
     value TEXT,
-    description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
@@ -169,9 +223,8 @@ CREATE TABLE IF NOT EXISTS system_config (
 | 字段名 | 类型 | 说明 |
 |-------|------|------|
 | id | INTEGER | 主键，自增 |
-| key | TEXT | 配置键名，唯一 |
-| value | TEXT | 配置值 |
-| description | TEXT | 配置描述 |
+| key | TEXT | 配置项键名 |
+| value | TEXT | 配置项值 |
 | created_at | TIMESTAMP | 创建时间 |
 | updated_at | TIMESTAMP | 更新时间 |
 
@@ -179,323 +232,45 @@ CREATE TABLE IF NOT EXISTS system_config (
 
 - `key` 字段设置了唯一索引
 
-## 数据库操作类
+## 敏感数据加密流程
 
-所有数据库操作通过 `Database` 类进行，该类采用单例模式设计，确保整个应用中只有一个数据库连接实例。
+1. 应用初始化时读取（或生成）Fernet 密钥，并创建加解密工具实例。
+2. 写入数据库前，对邮箱密码、OAuth 凭据、邮件正文等敏感字段调用 `encrypt_value` 进行加密。
+3. 从数据库读取后，对敏感字段调用 `decrypt_value` 还原原始明文数据。
 
-### 类结构：
-
-```python
-class Database:
-    _instance = None
-    _lock = threading.Lock()
-    
-    def __new__(cls):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super(Database, cls).__new__(cls)
-                cls._instance.conn = None
-                
-                # 初始化数据库
-                ...
-                
-            return cls._instance
-```
-
-### 核心方法：
-
-#### 数据库初始化
-
-```python
-def init_db(self):
-    """初始化数据库连接和表结构"""
-    # 创建表结构
-    # 初始化系统配置
-    # 检查并添加新字段
-```
-
-#### 用户管理
-
-```python
-def authenticate_user(self, username, password):
-    """验证用户凭据"""
-    
-def get_user_by_id(self, user_id):
-    """根据ID获取用户"""
-    
-def create_user(self, username, password, is_admin=False):
-    """创建新用户"""
-    
-def update_user_password(self, user_id, new_password):
-    """更新用户密码"""
-    
-def delete_user(self, user_id):
-    """删除用户"""
-    
-def get_all_users(self):
-    """获取所有用户"""
-```
-
-#### 邮箱管理
-
-```python
-def add_email(self, user_id, email, password, client_id=None, refresh_token=None, mail_type='outlook', server=None, port=None, use_ssl=True):
-    """添加邮箱"""
-    
-def get_all_emails(self, user_id=None):
-    """获取所有邮箱"""
-    
-def get_emails_by_user_id(self, user_id):
-    """获取用户的所有邮箱"""
-    
-def get_email_by_id(self, email_id, user_id=None):
-    """根据ID获取邮箱"""
-    
-def update_email(self, email_id, user_id=None, **kwargs):
-    """更新邮箱信息"""
-    
-def update_check_time(self, email_id):
-    """更新邮箱检查时间"""
-    
-def update_email_token(self, email_id, access_token):
-    """更新邮箱访问令牌"""
-    
-def delete_email(self, email_id, user_id=None):
-    """删除邮箱"""
-    
-def delete_emails(self, email_ids, user_id=None):
-    """批量删除邮箱"""
-```
-
-#### 邮件记录管理
-
-```python
-def add_mail_record(self, email_id, subject, sender, received_time, content, folder=None):
-    """添加邮件记录"""
-    
-def get_mail_records(self, email_id, user_id=None):
-    """获取邮箱的所有邮件记录"""
-    
-def search_mail_records(self, email_ids, query, search_in_subject=True, search_in_sender=True, search_in_recipient=False, search_in_content=True):
-    """搜索邮件记录"""
-```
-
-#### 系统配置管理
-
-```python
-def get_system_config(self, key):
-    """获取系统配置"""
-    
-def set_system_config(self, key, value):
-    """设置系统配置"""
-    
-def is_registration_allowed(self):
-    """检查是否允许注册"""
-    
-def toggle_registration(self, allow):
-    """开启或关闭注册功能"""
-```
-
-## 数据关系
-
-### 实体关系图 (ER Diagram)
-
-```
-+------------+       +------------+       +----------------+
-|            |       |            |       |                |
-|   users    |<----->|   emails   |<----->|  mail_records  |
-|            |       |            |       |                |
-+------------+       +------------+       +----------------+
-      ^
-      |
-      v
-+----------------+
-|                |
-| system_config  |
-|                |
-+----------------+
-```
-
-### 关系描述：
-
-1. **一对多关系**：
-   - 一个用户可以拥有多个邮箱账户（users -> emails）
-   - 一个邮箱可以有多条邮件记录（emails -> mail_records）
-
-2. **独立实体**：
-   - 系统配置表（system_config）独立存在，不与其他表直接关联
-
-## 安全设计
-
-### 密码加密
-
-用户密码使用PBKDF2和SHA-256算法加密存储：
-
-```python
-def _hash_password(self, password, salt):
-    """密码哈希"""
-    return hashlib.pbkdf2_hmac(
-        'sha256', 
-        password.encode('utf-8'), 
-        salt.encode('utf-8'), 
-        100000
-    ).hex()
-```
-
-每个用户有唯一的盐值（salt），防止彩虹表攻击。
-
-### 数据访问控制
-
-- 用户只能访问自己的邮箱和邮件
-- 管理员可以访问所有用户数据
-- 敏感操作（如删除用户）需要管理员权限
-
-## 数据操作示例
-
-### 添加用户
-
-```python
-# 创建普通用户
-success, is_admin = db.create_user("user1", "password123")
-
-# 创建管理员用户
-success, is_admin = db.create_user("admin1", "adminpass", is_admin=True)
-```
-
-### 添加邮箱
-
-```python
-# 添加Outlook邮箱
-db.add_email(
-    user_id=1,
-    email="user@outlook.com",
-    password="email_password",
-    client_id="client_id_value",
-    refresh_token="refresh_token_value",
-    mail_type="outlook"
-)
-
-# 添加IMAP邮箱
-db.add_email(
-    user_id=1,
-    email="user@example.com",
-    password="email_password",
-    server="imap.example.com",
-    port=993,
-    use_ssl=True,
-    mail_type="imap"
-)
-```
-
-### 搜索邮件
-
-```python
-# 搜索包含关键字的邮件
-results = db.search_mail_records(
-    email_ids=[1, 2, 3],
-    query="important",
-    search_in_subject=True,
-    search_in_content=True
-)
-```
-
-## 数据迁移与升级
-
-项目使用 `_check_and_add_column` 方法实现简单的数据库结构升级，支持向现有表添加新列：
-
-```python
-def _check_and_add_column(self, table, column, type_def):
-    """检查表中是否存在某列，如果不存在则添加"""
-    cursor = self.conn.execute(f"PRAGMA table_info({table})")
-    columns = [info[1] for info in cursor.fetchall()]
-    
-    if column not in columns:
-        logger.info(f"向表 {table} 添加列 {column}")
-        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_def}")
-        self.conn.commit()
-```
-
-## 性能优化
-
-### 1. 优化数据库连接
-
-使用单例模式确保只有一个数据库连接实例，减少连接开销：
-
-```python
-def __new__(cls):
-    with cls._lock:
-        if cls._instance is None:
-            cls._instance = super(Database, cls).__new__(cls)
-            # 初始化...
-        return cls._instance
-```
-
-### 2. 优化查询性能
-
-- 为经常查询的字段创建索引
-- 使用参数化查询防止SQL注入
-- 适当使用事务处理批量操作
-
-```python
-def save_mail_records(self, email_id, mail_records):
-    """批量保存邮件记录"""
-    try:
-        # 开始事务
-        self.conn.execute("BEGIN TRANSACTION")
-        
-        for record in mail_records:
-            # 插入记录...
-        
-        # 提交事务
-        self.conn.commit()
-        return True
-    except Exception as e:
-        # 回滚事务
-        self.conn.rollback()
-        logger.error(f"保存邮件记录失败: {str(e)}")
-        return False
-```
+此机制对业务层透明，不需要调用方额外编写加解密逻辑。
 
 ## 数据备份
 
-### 备份方法
-
-SQLite数据库文件备份非常简单，只需复制数据库文件即可：
+### SQLite 备份
 
 ```bash
 cp backend/data/huohuo_email.db backup/huohuo_email_$(date +%Y%m%d).db
+cp backend/data/db_encryption.key backup/db_encryption_$(date +%Y%m%d).key
 ```
 
-### 数据恢复
+### PostgreSQL / MySQL 备份
 
-恢复数据只需替换数据库文件：
+- PostgreSQL：使用 `pg_dump` 导出 `firemail` 数据库，同时妥善保存加密密钥文件/环境变量
+- MySQL：使用 `mysqldump` 导出数据库，或通过托管服务的快照功能进行备份
 
-```bash
-cp backup/huohuo_email_20250410.db backend/data/huohuo_email.db
-```
+恢复数据时请先恢复数据库，再确保实例使用与备份对应的 `DB_ENCRYPTION_KEY`。
 
 ## 常见问题与解决方案
 
 ### 1. 并发访问
 
-SQLite对并发写入支持有限，解决方案：
-
-- 使用线程锁保护关键操作
-- 短事务，避免长时间锁定数据库
-- 考虑读写分离策略
+- SQLite：使用单实例部署并避免长事务，必要时切换至 PostgreSQL/MySQL
+- PostgreSQL/MySQL：可通过连接池参数优化高并发访问
 
 ### 2. 性能瓶颈
 
-当数据量增长时可能出现性能问题，解决方案：
-
-- 定期清理过期数据
-- 拆分大表为小表
-- 考虑升级到更强大的数据库系统（如PostgreSQL）
+- 定期归档历史邮件记录
+- 为常用查询字段添加索引
+- 在重负载场景中使用 PostgreSQL/MySQL 并调整硬件资源
 
 ### 3. 数据一致性
 
-确保数据一致性的措施：
-
-- 使用外键约束
-- 事务处理
-- 应用层验证 
+- 保持数据库事务简短，避免长时间锁表
+- 确保多实例部署共享同一加密密钥
+- 对外部数据库启用定期备份和监控
