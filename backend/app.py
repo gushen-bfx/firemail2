@@ -485,6 +485,13 @@ def add_email(current_user):
         return jsonify({'error': '邮箱地址和密码是必需的'}), 400
 
     # 根据不同邮箱类型验证参数并添加
+    def _validation_failed(message=None):
+        error_message = message or '添加的邮箱无效，请检查输入的内容是否有误后重新添加'
+        return jsonify({
+            'error': '添加的邮箱无效，请检查输入的内容是否有误后重新添加',
+            'details': error_message
+        }), 400
+
     if mail_type == 'outlook':
         client_id = data.get('client_id')
         refresh_token = data.get('refresh_token')
@@ -499,7 +506,7 @@ def add_email(current_user):
             refresh_token=refresh_token
         )
         if not is_valid:
-            return jsonify({'error': validation_message or 'Outlook邮箱验证失败，请检查凭据'}), 400
+            return _validation_failed(validation_message)
 
         success = db.add_email(
             current_user['id'],
@@ -536,7 +543,7 @@ def add_email(current_user):
         )
 
         if not is_valid:
-            return jsonify({'error': validation_message or '邮箱连接验证失败，请检查服务器、端口或密码'}), 400
+            return _validation_failed(validation_message)
 
         success = db.add_email(
             current_user['id'],
@@ -553,7 +560,12 @@ def add_email(current_user):
         return jsonify({'error': f'不支持的邮箱类型: {mail_type}'}), 400
 
     if success:
-        return jsonify({'message': f'邮箱 {email} 添加成功', 'status': 'active', 'status_message': validation_message, 'email_id': success})
+        return jsonify({
+            'message': f'邮箱 {email} 添加成功',
+            'status': 'active',
+            'status_message': validation_message or '邮箱连接验证成功',
+            'email_id': success
+        })
     else:
         return jsonify({'error': f'邮箱 {email} 已存在或添加失败'}), 409
 
