@@ -2,12 +2,10 @@ name: Build and Publish Docker Image
 
 on:
   push:
-    branches:
-      - main
-      - master
     tags:
       - 'v*'
   workflow_dispatch:
+  pull_request:
 
 jobs:
   build-and-push:
@@ -87,7 +85,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta_dockerhub.outputs.tags }}
           labels: ${{ steps.meta_dockerhub.outputs.labels }}
@@ -97,11 +95,18 @@ jobs:
       - name: Build and push GHCR image
         if: ${{ steps.meta_ghcr.outputs.tags != '' }}
         uses: docker/build-push-action@v4
+        id: build_ghcr
+        continue-on-error: true
         with:
           context: .
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta_ghcr.outputs.tags }}
           labels: ${{ steps.meta_ghcr.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Warn when GHCR push fails
+        if: ${{ steps.build_ghcr.outcome == 'failure' }}
+        run: |
+          echo "::warning::Failed to push image to ghcr.io. Verify GH_TOKEN has the write:packages scope or remove the secret to skip GHCR publishing."
