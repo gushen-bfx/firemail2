@@ -69,35 +69,57 @@ jobs:
             exit 1
           fi
 
-          if [[ -z "${GH_TOKEN:-}" ]]; then
-            echo "::error::GH_TOKEN with write:packages scope is required to publish to GHCR."
-            exit 1
-          fi
-
           repo_lower="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
           docker_repo="${DOCKER_HUB_USERNAME}/$(basename "${repo_lower}")"
           ghcr_repo="ghcr.io/${repo_lower}"
           short_sha="$(echo "${GITHUB_SHA}" | cut -c1-7)"
 
-          mapfile -t tags < <(printf '%s\n' \
-            "${docker_repo}:sha-${short_sha}" \
-            "${ghcr_repo}:sha-${short_sha}")
+          ghcr_enabled=false
+          if [[ -n "${GH_TOKEN:-}" ]]; then
+            if response_headers=$(curl -sSL -o /dev/null -D - \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/user); then
+              scopes=$(printf '%s' "${response_headers}" | awk -F': ' '/^x-oauth-scopes:/ {print $2}' | tr -d '\r')
+
+              if [[ "${scopes}" == *"write:packages"* ]]; then
+                ghcr_enabled=true
+              else
+                echo "::warning::GH_TOKEN is missing write:packages scope; GHCR images will be skipped."
+              fi
+            else
+              echo "::warning::Failed to inspect GH_TOKEN scopes; skipping GHCR publishing."
+            fi
+          else
+            echo "::warning::GH_TOKEN secret not configured; GHCR images will be skipped."
+          fi
+
+          mapfile -t docker_tags < <(printf '%s\n' "${docker_repo}:sha-${short_sha}")
+          mapfile -t ghcr_tags < <(printf '%s\n' "${ghcr_repo}:sha-${short_sha}")
 
           if [[ "${GITHUB_REF}" == "refs/heads/${DEFAULT_BRANCH}" ]]; then
-            tags+=("${docker_repo}:latest")
-            tags+=("${ghcr_repo}:latest")
+            docker_tags+=("${docker_repo}:latest")
+            ghcr_tags+=("${ghcr_repo}:latest")
           elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             version="${GITHUB_REF#refs/tags/}"
-            tags+=("${docker_repo}:${version}")
-            tags+=("${ghcr_repo}:${version}")
-            tags+=("${docker_repo}:latest")
-            tags+=("${ghcr_repo}:latest")
+            docker_tags+=("${docker_repo}:${version}")
+            ghcr_tags+=("${ghcr_repo}:${version}")
+            docker_tags+=("${docker_repo}:latest")
+            ghcr_tags+=("${ghcr_repo}:latest")
           fi
 
           {
-            printf 'tags<<EOF\n'
-            printf '%s\n' "${tags[@]}"
+            printf 'docker-tags<<EOF\n'
+            printf '%s\n' "${docker_tags[@]}"
             printf 'EOF\n'
+
+            printf 'ghcr-tags<<EOF\n'
+            if [[ "${ghcr_enabled}" == true ]]; then
+              printf '%s\n' "${ghcr_tags[@]}"
+            fi
+            printf 'EOF\n'
+
+            printf 'ghcr-enabled=%s\n' "${ghcr_enabled}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Log in to Docker Hub
@@ -107,6 +129,7 @@ jobs:
           password: ${{ env.DOCKER_HUB_TOKEN }}
 
       - name: Log in to GitHub Container Registry
+        if: steps.prep.outputs.ghcr-enabled == 'true'
         uses: docker/login-action@v2
         with:
           registry: ghcr.io
@@ -119,6 +142,8 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.prep.outputs.tags }}
+          tags: |
+            ${{ steps.prep.outputs.docker-tags }}
+            ${{ steps.prep.outputs.ghcr-tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
