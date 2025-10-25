@@ -6,7 +6,7 @@ import hashlib
 import secrets
 import base64
 from typing import List, Dict, Optional, Callable, Any
-from datetime import datetime
+from datetime import datetime, date, time
 import traceback
 
 try:
@@ -474,17 +474,32 @@ class Database:
 
         raise ValueError(f"不支持的数据库类型: {self.db_type}")
 
+    def _normalize_field_value(self, value: Any) -> Any:
+        if isinstance(value, (datetime, date, time)):
+            return value.isoformat()
+        if isinstance(value, memoryview):
+            return value.tobytes()
+        return value
+
     def _row_to_dict(self, row: Any) -> Optional[Dict[str, Any]]:
         if row is None:
             return None
         if isinstance(row, dict):
-            return dict(row)
+            return {key: self._normalize_field_value(value) for key, value in row.items()}
         try:
-            return dict(row)
+            return {key: self._normalize_field_value(value) for key, value in dict(row).items()}
         except TypeError:
             if hasattr(row, 'keys'):
-                return {key: row[key] for key in row.keys()}
+                return {key: self._normalize_field_value(row[key]) for key in row.keys()}
             return None
+
+    def _rows_to_dicts(self, rows: List[Any]) -> List[Dict[str, Any]]:
+        records = []
+        for row in rows:
+            record = self._row_to_dict(row)
+            if record is not None:
+                records.append(record)
+        return records
 
     def _load_encryption_key(self):
         if hasattr(self, 'fernet') and getattr(self, 'fernet', None):
@@ -864,7 +879,7 @@ class Database:
     def get_all_users(self):
         """获取所有用户"""
         cursor = self._execute("SELECT id, username, is_admin, created_at FROM users ORDER BY created_at DESC", commit=False)
-        return cursor.fetchall()
+        return self._rows_to_dicts(cursor.fetchall())
 
     # 邮箱相关方法
     def add_email(self, user_id, email, password, client_id=None, refresh_token=None, mail_type='outlook', server=None, port=None, use_ssl=True):
@@ -1150,7 +1165,7 @@ class Database:
         records = []
         for record in cursor.fetchall():
             # 将记录转换为字典
-            record_dict = dict(record)
+            record_dict = self._row_to_dict(record) or {}
 
             # 尝试将content字段从JSON字符串转换为字典
             try:
@@ -1186,7 +1201,7 @@ class Database:
 
             if record:
                 # 将记录转换为字典
-                record_dict = dict(record)
+                record_dict = self._row_to_dict(record) or {}
 
                 # 尝试将content字段从JSON字符串转换为字典
                 try:
@@ -1245,7 +1260,7 @@ class Database:
                 [mail_id],
                 commit=False
             )
-            return cursor.fetchall()
+            return self._rows_to_dicts(cursor.fetchall())
         except Exception as e:
             logger.error(f"获取附件信息失败: {str(e)}")
             return []
@@ -1332,7 +1347,7 @@ class Database:
             cursor = self._execute(sql, params, commit=False)
             results = cursor.fetchall()
             logger.info(f"搜索结果: 找到 {len(results)} 条记录")
-            return [dict(result) for result in results]
+            return self._rows_to_dicts(results)
         except Exception as e:
             logger.error(f"搜索邮件记录失败: {str(e)}")
             return []
@@ -1381,7 +1396,7 @@ class Database:
                 [email_id, subject, sender],
                 commit=False
             )
-            return cursor.fetchone()
+            return self._row_to_dict(cursor.fetchone())
         except Exception as e:
             logger.error(f"获取邮件记录失败: {str(e)}")
             return None
@@ -1477,7 +1492,7 @@ class Database:
                     WHERE enable_realtime_check = ?
                 )
             """, [self._bool_value(True)], commit=False)
-            return [dict(row) for row in cursor.fetchall()]
+            return self._rows_to_dicts(cursor.fetchall())
         except Exception as e:
             logger.error(f"获取启用实时检查的用户列表失败: {str(e)}")
             return []
