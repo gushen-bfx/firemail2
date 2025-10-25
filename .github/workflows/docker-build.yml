@@ -35,9 +35,26 @@ jobs:
           username: ${{ env.DOCKER_HUB_USERNAME }}
           password: ${{ env.DOCKER_HUB_TOKEN }}
 
+      - name: Inspect GH_TOKEN scopes
+        id: gh_token_scope
+        if: ${{ env.GH_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          headers=$(curl -sSI -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user | tr -d '\r')
+          scopes=$(echo "$headers" | awk -F': ' 'tolower($1)=="x-oauth-scopes" {print $2}' | tr -d ' ')
+          if [ -z "$scopes" ]; then
+            echo "::warning::Failed to read scopes for GH_TOKEN. Assuming it lacks write:packages. GHCR publishing will be skipped."
+            echo "write_scope=false" >> "$GITHUB_OUTPUT"
+          elif echo ",$scopes," | grep -qi ",write:packages,"; then
+            echo "write_scope=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::GH_TOKEN scopes ($scopes) do not include write:packages. GHCR publishing will be skipped."
+            echo "write_scope=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Login to GitHub Container Registry
         id: login_ghcr
-        if: ${{ env.GH_TOKEN != '' }}
+        if: ${{ env.GH_TOKEN != '' && steps.gh_token_scope.outputs.write_scope == 'true' }}
         continue-on-error: true
         uses: docker/login-action@v2
         with:
