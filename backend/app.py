@@ -10,6 +10,7 @@ from flask import Flask, send_from_directory, jsonify, request, Response, make_r
 from flask_cors import CORS
 from database.db import Database
 from utils.email import EmailBatchProcessor
+from utils.email.validation import verify_email_credentials
 from ws_server.handler import WebSocketHandler
 import asyncio
 import concurrent.futures
@@ -490,6 +491,15 @@ def add_email(current_user):
 
         if not client_id or not refresh_token:
             return jsonify({'error': 'Outlook邮箱需要提供Client ID和Refresh Token'}), 400
+        is_valid, validation_message = verify_email_credentials(
+            mail_type,
+            email,
+            password=password,
+            client_id=client_id,
+            refresh_token=refresh_token
+        )
+        if not is_valid:
+            return jsonify({'error': validation_message or 'Outlook邮箱验证失败，请检查凭据'}), 400
 
         success = db.add_email(
             current_user['id'],
@@ -497,19 +507,36 @@ def add_email(current_user):
             password,
             client_id,
             refresh_token,
-            mail_type
+            mail_type,
+            status='active',
+            status_message=validation_message
         )
     elif mail_type in ['imap', 'gmail', 'qq']:
         # Gmail和QQ邮箱使用IMAP协议，服务器和端口是固定的
         if mail_type == 'gmail':
             server = 'imap.gmail.com'
             port = 993
+            use_ssl = True
         elif mail_type == 'qq':
             server = 'imap.qq.com'
             port = 993
+            use_ssl = True
         else:
-            server = data.get('server', 'imap.gmail.com')
-            port = data.get('port', 993)
+            use_ssl = data.get('use_ssl', True)
+            server = data.get('server')
+            port = data.get('port', 993 if use_ssl else 143)
+
+        is_valid, validation_message = verify_email_credentials(
+            mail_type,
+            email,
+            password=password,
+            server=server,
+            port=port,
+            use_ssl=use_ssl
+        )
+
+        if not is_valid:
+            return jsonify({'error': validation_message or '邮箱连接验证失败，请检查服务器、端口或密码'}), 400
 
         success = db.add_email(
             current_user['id'],
@@ -518,13 +545,15 @@ def add_email(current_user):
             mail_type=mail_type,
             server=server,
             port=port,
-            use_ssl=True
+            use_ssl=use_ssl,
+            status='active',
+            status_message=validation_message
         )
     else:
         return jsonify({'error': f'不支持的邮箱类型: {mail_type}'}), 400
 
     if success:
-        return jsonify({'message': f'邮箱 {email} 添加成功'})
+        return jsonify({'message': f'邮箱 {email} 添加成功', 'status': 'active', 'status_message': validation_message, 'email_id': success})
     else:
         return jsonify({'error': f'邮箱 {email} 已存在或添加失败'}), 409
 

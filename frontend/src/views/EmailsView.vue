@@ -64,6 +64,26 @@
               </el-tag>
             </template>
           </el-table-column>
+          <el-table-column prop="status" label="状态" width="140">
+            <template #default="scope">
+              <el-tooltip
+                v-if="scope.row.status_message"
+                :content="scope.row.status_message"
+                placement="top"
+              >
+                <el-tag :type="getStatusTagType(scope.row.status)" class="status-tag">
+                  {{ getStatusText(scope.row.status) }}
+                </el-tag>
+              </el-tooltip>
+              <el-tag
+                v-else
+                :type="getStatusTagType(scope.row.status)"
+                class="status-tag"
+              >
+                {{ getStatusText(scope.row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="password" label="密码" width="150">
             <template #default="scope">
               <div class="password-field flex-between">
@@ -510,6 +530,30 @@ const getMailTypeColor = (type) => {
   return mailTypes[type]?.color || 'default'
 }
 
+const STATUS_TEXT_MAP = {
+  active: '正常',
+  checking: '检查中',
+  error: '异常',
+  invalid: '无效',
+  unknown: '未检查'
+}
+
+const STATUS_TAG_TYPE_MAP = {
+  active: 'success',
+  checking: 'warning',
+  error: 'danger',
+  invalid: 'danger',
+  unknown: 'info'
+}
+
+const getStatusText = (status) => {
+  return STATUS_TEXT_MAP[status] || STATUS_TEXT_MAP.unknown
+}
+
+const getStatusTagType = (status) => {
+  return STATUS_TAG_TYPE_MAP[status] || STATUS_TAG_TYPE_MAP.unknown
+}
+
 // 添加邮箱表单
 const addEmailForm = ref({
   mail_type: 'outlook',
@@ -821,7 +865,8 @@ const handleAddEmail = async () => {
     await refreshEmails()
   } catch (error) {
     console.error('添加邮箱失败:', error)
-    ElMessage.error('添加邮箱失败: ' + (error.message || '未知错误'))
+    const message = error?.response?.data?.error || error.message || '未知错误'
+    ElMessage.error('添加邮箱失败: ' + message)
   } finally {
     addingEmail.value = false
     ElLoading.service().close()
@@ -1264,6 +1309,13 @@ onMounted(() => {
 
 .mail-type-tag {
   font-weight: 500;
+}
+
+.status-tag {
+  min-width: 72px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
 }
 
 .password-field {

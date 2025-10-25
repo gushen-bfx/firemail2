@@ -135,6 +135,8 @@ class Database:
 
             # 检查并添加新字段（用于旧版本升级）
             self._check_and_add_column('emails', 'enable_realtime_check', 'INTEGER DEFAULT 0')
+            self._check_and_add_column('emails', 'status', "TEXT DEFAULT 'unknown'")
+            self._check_and_add_column('emails', 'status_message', 'TEXT')
             self._check_and_add_column('users', 'password_hash', 'TEXT NOT NULL')
 
             logger.info("初始化数据库表结构完成")
@@ -217,6 +219,8 @@ class Database:
                     access_token TEXT,
                     last_check_time TIMESTAMP,
                     enable_realtime_check INTEGER DEFAULT 0,
+                    status TEXT DEFAULT 'unknown',
+                    status_message TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (id),
@@ -290,6 +294,8 @@ class Database:
                     access_token TEXT,
                     last_check_time TIMESTAMP,
                     enable_realtime_check BOOLEAN DEFAULT FALSE,
+                    status TEXT DEFAULT 'unknown',
+                    status_message TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (id),
@@ -363,6 +369,8 @@ class Database:
                     access_token TEXT,
                     last_check_time TIMESTAMP NULL DEFAULT NULL,
                     enable_realtime_check TINYINT(1) DEFAULT 0,
+                    status VARCHAR(50) DEFAULT 'unknown',
+                    status_message TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     UNIQUE KEY unique_user_email (user_id, email),
@@ -964,7 +972,7 @@ class Database:
         return users
 
     # 邮箱相关方法
-    def add_email(self, user_id, email, password, client_id=None, refresh_token=None, mail_type='outlook', server=None, port=None, use_ssl=True):
+    def add_email(self, user_id, email, password, client_id=None, refresh_token=None, mail_type='outlook', server=None, port=None, use_ssl=True, status='unknown', status_message=None):
         """添加新的邮箱账号"""
         try:
             # 日志输出详细信息，但隐藏敏感信息
@@ -988,11 +996,12 @@ class Database:
             encrypted_password = self._encrypt_value(password) if password else None
             encrypted_client_id = self._encrypt_value(client_id) if client_id else None
             encrypted_refresh_token = self._encrypt_value(refresh_token) if refresh_token else None
+            status_message_value = status_message
 
             # 根据邮箱类型处理SQL，默认启用实时检查
             if mail_type == 'outlook':
                 self._execute(
-                    "INSERT INTO emails (user_id, email, password, client_id, refresh_token, mail_type, enable_realtime_check, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                    "INSERT INTO emails (user_id, email, password, client_id, refresh_token, mail_type, enable_realtime_check, status, status_message, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                     [
                         user_id,
                         email,
@@ -1001,12 +1010,14 @@ class Database:
                         encrypted_refresh_token,
                         mail_type,
                         self._bool_value(True),
+                        status,
+                        status_message_value,
                     ],
                     commit=True
                 )
             elif mail_type in ['imap', 'gmail', 'qq']:
                 self._execute(
-                    "INSERT INTO emails (user_id, email, password, mail_type, server, port, use_ssl, enable_realtime_check, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                    "INSERT INTO emails (user_id, email, password, mail_type, server, port, use_ssl, enable_realtime_check, status, status_message, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                     [
                         user_id,
                         email,
@@ -1016,6 +1027,8 @@ class Database:
                         port,
                         self._bool_value(use_ssl),
                         self._bool_value(True),
+                        status,
+                        status_message_value,
                     ],
                     commit=True
                 )
@@ -1024,7 +1037,7 @@ class Database:
                 return False
 
             email_id = self._get_last_insert_id('emails')
-            logger.info(f"邮箱添加成功: {email}, ID: {email_id}, 类型: {mail_type}, 已启用实时检查")
+            logger.info(f"邮箱添加成功: {email}, ID: {email_id}, 类型: {mail_type}, 状态: {status}, 已启用实时检查")
             return email_id
         except Exception as e:
             logger.error(f"添加邮箱失败: {email}, 错误: {str(e)}")
@@ -1085,6 +1098,7 @@ class Database:
             # 构建更新语句
             update_fields = []
             params = []
+            reset_status = False
 
             # 处理每个更新字段
             for key, value in kwargs.items():
@@ -1092,6 +1106,8 @@ class Database:
                     value = self._bool_value(value)
                 if key in ['password', 'client_id', 'refresh_token', 'access_token'] and value is not None:
                     value = self._encrypt_value(value)
+                if key in {'email', 'password', 'client_id', 'refresh_token', 'server', 'port', 'use_ssl'}:
+                    reset_status = True
                 update_fields.append(f"{key} = ?")
                 params.append(value)
 
@@ -1115,6 +1131,8 @@ class Database:
             """
 
             self._execute(sql, params, commit=True)
+            if reset_status:
+                self.update_email_status(email_id, 'unknown', '邮箱配置已更新，请重新检查连接')
             logger.info(f"邮箱信息更新成功: ID={email_id}")
             return True
 
@@ -1145,6 +1163,20 @@ class Database:
             return True
         except Exception as e:
             logger.error(f"更新邮箱访问令牌失败, ID: {email_id}, 错误: {str(e)}")
+            return False
+
+    def update_email_status(self, email_id: int, status: str, message: Optional[str] = None) -> bool:
+        """更新邮箱的状态信息"""
+        try:
+            self._execute(
+                "UPDATE emails SET status = ?, status_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                [status, message, email_id],
+                commit=True
+            )
+            logger.debug(f"邮箱状态更新成功: ID={email_id}, 状态={status}")
+            return True
+        except Exception as e:
+            logger.error(f"更新邮箱状态失败, ID: {email_id}, 错误: {str(e)}")
             return False
 
     def delete_email(self, email_id, user_id=None):
@@ -1446,7 +1478,7 @@ class Database:
             # 执行查询
             cursor = self._execute(f'''
                 SELECT id, user_id, email, password, client_id, refresh_token,
-                       mail_type, server, port, use_ssl, last_check_time
+                       mail_type, server, port, use_ssl, last_check_time, status, status_message
                 FROM emails
                 WHERE id IN ({placeholders})
             ''', email_ids, commit=False)

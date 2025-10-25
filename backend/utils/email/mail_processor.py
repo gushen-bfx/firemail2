@@ -293,15 +293,19 @@ class EmailBatchProcessor:
     def _check_email_task(self, email_info, callback=None):
         """检查单个邮箱的邮件"""
         email_id = email_info['id']
+        result = {'success': False, 'message': '邮箱检查未完成'}
         try:
             # 标记为正在处理
             with self.lock:
                 self.processing_emails[email_id] = True
 
+            try:
+                self.db.update_email_status(email_id, 'checking', '正在检查邮箱')
+            except Exception as status_error:
+                logger.warning(f"更新邮箱状态为检查中失败: {status_error}")
+
             # 获取上次检查时间，用于仅获取新邮件
             last_check_time = email_info.get('last_check_time')
-
-            # 标准化处理last_check_time
             last_check_time = normalize_check_time(last_check_time)
 
             mail_type = email_info.get('mail_type', '')
@@ -315,16 +319,17 @@ class EmailBatchProcessor:
                     error_msg = "缺少OAuth2.0认证信息"
                     if callback:
                         callback(0, error_msg)
-                    return {'success': False, 'message': error_msg}
+                    result = {'success': False, 'message': error_msg}
+                    return result
 
-                # 获取新的访问令牌
                 try:
                     access_token = OutlookMailHandler.get_new_access_token(refresh_token, client_id)
                     if not access_token:
                         error_msg = "获取访问令牌失败"
                         if callback:
                             callback(0, error_msg)
-                        return {'success': False, 'message': error_msg}
+                        result = {'success': False, 'message': error_msg}
+                        return result
 
                     # 更新邮箱的访问令牌
                     self.db.update_email_token(email_id, access_token)
@@ -345,57 +350,44 @@ class EmailBatchProcessor:
                     if not mail_records:
                         if callback:
                             callback(100, "没有找到新邮件")
-
-                        # 没有找到新邮件也算成功，更新检查时间
                         self.update_check_time(self.db, email_id)
+                        result = {'success': True, 'message': '没有找到新邮件'}
+                        return result
 
-                        return {'success': True, 'message': '没有找到新邮件'}
-
-                    # 保存邮件记录，传递邮件键列表用于高效去重
-                    mail_keys = [record.get('mail_key', '') for record in mail_records if 'mail_key' in record]
                     saved_count = self.save_mail_records(self.db, email_id, mail_records, callback)
-
-                    # 更新最后检查时间
                     self.update_check_time(self.db, email_id)
-
-                    # 记录完成
                     log_email_complete(email_info['email'], email_id, len(mail_records), len(mail_records), saved_count)
 
-                    return {
+                    result = {
                         'success': True,
                         'message': f'成功获取{len(mail_records)}封邮件，新增{saved_count}封'
                     }
+                    return result
 
                 except Exception as e:
                     error_msg = f"处理Outlook邮箱失败: {str(e)}"
                     log_email_error(email_info['email'], email_id, error_msg)
                     if callback:
                         callback(0, error_msg)
-                    return {'success': False, 'message': error_msg}
+                    result = {'success': False, 'message': error_msg}
+                    return result
 
             elif mail_type == 'gmail':
-                # 处理Gmail邮箱
                 result = GmailHandler.check_mail(email_info, self.db, callback)
-                # 只有在成功时更新检查时间
                 if result.get('success', False):
                     self.update_check_time(self.db, email_id)
                 return result
 
             elif mail_type == 'qq':
-                # 处理QQ邮箱
                 result = QQMailHandler.check_mail(email_info, self.db, callback)
-                # 只有在成功时更新检查时间
                 if result.get('success', False):
                     self.update_check_time(self.db, email_id)
                 return result
 
             else:
-                # 处理IMAP邮箱
                 try:
-                    # 记录开始处理
                     log_email_start(email_info['email'], email_id)
 
-                    # 获取邮件，增加last_check_time参数
                     mail_records = IMAPMailHandler.fetch_emails(
                         email_info['email'],
                         email_info['password'],
@@ -409,42 +401,37 @@ class EmailBatchProcessor:
                     if not mail_records:
                         if callback:
                             callback(100, "没有找到新邮件")
-
-                        # 没有找到新邮件也算成功，更新检查时间
                         self.update_check_time(self.db, email_id)
+                        result = {'success': True, 'message': '没有找到新邮件'}
+                        return result
 
-                        return {'success': True, 'message': '没有找到新邮件'}
-
-                    # 保存邮件记录
                     saved_count = self.save_mail_records(self.db, email_id, mail_records, callback)
-
-                    # 更新最后检查时间
                     self.update_check_time(self.db, email_id)
-
-                    # 记录完成
                     log_email_complete(email_info['email'], email_id, len(mail_records), len(mail_records), saved_count)
 
-                    return {
+                    result = {
                         'success': True,
                         'message': f'成功获取 {len(mail_records)} 封邮件，新增 {saved_count} 封'
                     }
+                    return result
 
                 except Exception as e:
                     error_msg = f"处理IMAP邮箱失败: {str(e)}"
                     log_email_error(email_info['email'], email_id, error_msg)
                     if callback:
                         callback(0, error_msg)
-                    return {'success': False, 'message': error_msg}
+                    result = {'success': False, 'message': error_msg}
+                    return result
 
         except Exception as e:
             error_msg = f"处理邮箱失败: {str(e)}"
             log_email_error(email_info['email'], email_id, error_msg)
             if callback:
                 callback(0, error_msg)
-            return {'success': False, 'message': error_msg}
+            result = {'success': False, 'message': error_msg}
+            return result
 
         finally:
-            # 标记处理完成，释放资源
             try:
                 with self.lock:
                     if email_id in self.processing_emails:
@@ -452,6 +439,13 @@ class EmailBatchProcessor:
                         logger.info(f"邮箱 ID {email_id} 处理完成，已从处理队列中移除")
             except Exception as e:
                 logger.error(f"释放邮箱处理资源失败: {str(e)}")
+
+            try:
+                final_status = 'active' if result.get('success') else 'error'
+                status_message = result.get('message')
+                self.db.update_email_status(email_id, final_status, status_message)
+            except Exception as status_error:
+                logger.error(f"更新邮箱最终状态失败: {status_error}")
 
     def start_real_time_check(self, check_interval=60):
         """启动实时邮件检查"""
