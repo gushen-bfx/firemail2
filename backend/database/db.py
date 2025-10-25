@@ -417,6 +417,14 @@ class Database:
             return query.replace('?', '%s')
         return query
 
+    def _bool_value(self, value: Any) -> Any:
+        if value is None:
+            return None
+        truthy = bool(value)
+        if self.db_type in ('postgresql', 'postgres'):
+            return truthy
+        return 1 if truthy else 0
+
     def _execute(self, query: str, params: Optional[List[Any]] = None, commit: bool = False):
         cursor = self._cursor()
         prepared_query = self._prepare_query(query)
@@ -626,6 +634,8 @@ class Database:
                 record[field] = self._decrypt_value(record[field])
         if 'use_ssl' in record and record['use_ssl'] is not None:
             record['use_ssl'] = bool(record['use_ssl'])
+        if 'enable_realtime_check' in record and record['enable_realtime_check'] is not None:
+            record['enable_realtime_check'] = bool(record['enable_realtime_check'])
         return record
 
     def _init_system_config(self):
@@ -802,7 +812,7 @@ class Database:
 
             self._execute(
                 "INSERT INTO users (username, password, password_hash, salt, is_admin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                (username, password, password_hash, salt, 1 if is_admin else 0),
+                (username, password, password_hash, salt, self._bool_value(is_admin)),
                 commit=True
             )
             logger.info(f"创建用户成功: {username}, 管理员权限: {is_admin}")
@@ -885,16 +895,31 @@ class Database:
             # 根据邮箱类型处理SQL，默认启用实时检查
             if mail_type == 'outlook':
                 self._execute(
-                    "INSERT INTO emails (user_id, email, password, client_id, refresh_token, mail_type, enable_realtime_check, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                    [user_id, email, encrypted_password, encrypted_client_id, encrypted_refresh_token, mail_type],
+                    "INSERT INTO emails (user_id, email, password, client_id, refresh_token, mail_type, enable_realtime_check, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                    [
+                        user_id,
+                        email,
+                        encrypted_password,
+                        encrypted_client_id,
+                        encrypted_refresh_token,
+                        mail_type,
+                        self._bool_value(True),
+                    ],
                     commit=True
                 )
             elif mail_type in ['imap', 'gmail', 'qq']:
-                # 将布尔值转换为整数值 (1=True, 0=False)
-                use_ssl_int = 1 if use_ssl else 0
                 self._execute(
-                    "INSERT INTO emails (user_id, email, password, mail_type, server, port, use_ssl, enable_realtime_check, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                    [user_id, email, encrypted_password, mail_type, server, port, use_ssl_int],
+                    "INSERT INTO emails (user_id, email, password, mail_type, server, port, use_ssl, enable_realtime_check, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                    [
+                        user_id,
+                        email,
+                        encrypted_password,
+                        mail_type,
+                        server,
+                        port,
+                        self._bool_value(use_ssl),
+                        self._bool_value(True),
+                    ],
                     commit=True
                 )
             else:
@@ -966,9 +991,8 @@ class Database:
 
             # 处理每个更新字段
             for key, value in kwargs.items():
-                if key == 'use_ssl':
-                    # 确保use_ssl是整数类型
-                    value = 1 if value else 0
+                if key in {'use_ssl', 'enable_realtime_check', 'has_attachments', 'is_admin'} and value is not None:
+                    value = self._bool_value(value)
                 if key in ['password', 'client_id', 'refresh_token', 'access_token'] and value is not None:
                     value = self._encrypt_value(value)
                 update_fields.append(f"{key} = ?")
@@ -1092,10 +1116,12 @@ class Database:
                 import json
                 content = json.dumps(content, ensure_ascii=False)
 
+            has_attachments_value = self._bool_value(has_attachments)
+
             # 邮件不存在，添加新记录
             self._execute(
                 "INSERT INTO mail_records (email_id, subject, sender, received_time, content, folder, has_attachments) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                [email_id, subject, sender, received_time, content, folder, has_attachments],
+                [email_id, subject, sender, received_time, content, folder, has_attachments_value],
                 commit=True
             )
             mail_id = self._get_last_insert_id('mail_records')
@@ -1140,6 +1166,9 @@ class Database:
             except Exception as e:
                 logger.warning(f"解析邮件内容失败: {str(e)}")
 
+            if 'has_attachments' in record_dict and record_dict['has_attachments'] is not None:
+                record_dict['has_attachments'] = bool(record_dict['has_attachments'])
+
             records.append(record_dict)
 
         return records
@@ -1173,6 +1202,9 @@ class Database:
                 except Exception as e:
                     logger.warning(f"解析邮件内容失败: {str(e)}")
 
+                if 'has_attachments' in record_dict and record_dict['has_attachments'] is not None:
+                    record_dict['has_attachments'] = bool(record_dict['has_attachments'])
+
                 return record_dict
 
             return None
@@ -1194,8 +1226,8 @@ class Database:
 
             # 更新邮件记录，标记为有附件
             self._execute(
-                "UPDATE mail_records SET has_attachments = 1 WHERE id = ?",
-                [mail_id],
+                "UPDATE mail_records SET has_attachments = ? WHERE id = ?",
+                [self._bool_value(True), mail_id],
                 commit=True
             )
 
@@ -1442,9 +1474,9 @@ class Database:
                 WHERE id IN (
                     SELECT DISTINCT user_id
                     FROM emails
-                    WHERE enable_realtime_check = 1
+                    WHERE enable_realtime_check = ?
                 )
-            """, commit=False)
+            """, [self._bool_value(True)], commit=False)
             return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"获取启用实时检查的用户列表失败: {str(e)}")
@@ -1458,9 +1490,9 @@ class Database:
                        use_ssl, client_id, refresh_token, last_check_time,
                        enable_realtime_check
                 FROM emails
-                WHERE user_id = ? AND enable_realtime_check = 1
+                WHERE user_id = ? AND enable_realtime_check = ?
                 ORDER BY id
-            """, [user_id], commit=False)
+            """, [user_id, self._bool_value(True)], commit=False)
             return [self._decrypt_email_record(row) for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"获取用户邮箱列表失败: {str(e)}")
@@ -1473,7 +1505,7 @@ class Database:
                 UPDATE emails
                 SET enable_realtime_check = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, [1 if enable else 0, email_id], commit=True)
+            """, [self._bool_value(enable), email_id], commit=True)
             logger.info(f"已{'启用' if enable else '禁用'}邮箱ID {email_id}的实时检查")
             return True
         except Exception as e:
