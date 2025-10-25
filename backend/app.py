@@ -10,6 +10,7 @@ from flask import Flask, send_from_directory, jsonify, request, Response, make_r
 from flask_cors import CORS
 from database.db import Database
 from utils.email import EmailBatchProcessor
+from utils.email.validation import verify_email_credentials
 from ws_server.handler import WebSocketHandler
 import asyncio
 import concurrent.futures
@@ -319,6 +320,69 @@ def create_user(current_user):
         'is_admin': is_admin
     })
 
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+@token_required
+@admin_required
+def update_user(current_user, user_id):
+    """更新用户信息 (仅管理员)"""
+    data = request.json or {}
+    username = data.get('username') if 'username' in data else None
+    is_admin_raw = data.get('is_admin') if 'is_admin' in data else None
+
+    if username is None and 'is_admin' not in data:
+        return jsonify({'error': '没有需要更新的字段'}), 400
+
+    target_user = db.get_user_by_id(user_id)
+    if not target_user:
+        return jsonify({'error': '用户不存在'}), 404
+
+    if username is not None:
+        username = username.strip()
+        if not username:
+            return jsonify({'error': '用户名不能为空'}), 400
+        if len(username) < 3 or len(username) > 20:
+            return jsonify({'error': '用户名长度必须在3-20个字符之间'}), 400
+        if username != target_user['username'] and db.is_username_taken(username, exclude_user_id=user_id):
+            return jsonify({'error': '用户名已存在'}), 409
+
+    is_admin = None
+    if 'is_admin' in data:
+        value = is_admin_raw
+        if isinstance(value, str):
+            value = value.strip().lower()
+            if value in {'true', '1', 'yes', 'y', 't'}:
+                value = True
+            elif value in {'false', '0', 'no', 'n', 'f'}:
+                value = False
+            else:
+                return jsonify({'error': 'is_admin参数无效'}), 400
+        elif isinstance(value, bool):
+            pass
+        elif value is None:
+            return jsonify({'error': 'is_admin参数无效'}), 400
+        else:
+            return jsonify({'error': 'is_admin参数无效'}), 400
+
+        is_admin = bool(value)
+
+        if not is_admin and target_user.get('is_admin'):
+            if current_user['id'] == user_id:
+                return jsonify({'error': '不能移除自身的管理员权限'}), 400
+            total_admins = db.count_admin_users()
+            if total_admins <= 1:
+                return jsonify({'error': '至少需要保留一个管理员账户'}), 400
+
+    success = db.update_user(user_id, username=username if username is not None else None, is_admin=is_admin)
+    if not success:
+        return jsonify({'error': '用户更新失败'}), 500
+
+    updated_user = db.get_user_by_id(user_id)
+    return jsonify({
+        'id': updated_user['id'],
+        'username': updated_user['username'],
+        'is_admin': updated_user['is_admin']
+    })
+
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 @token_required
 @admin_required
@@ -421,12 +485,33 @@ def add_email(current_user):
         return jsonify({'error': '邮箱地址和密码是必需的'}), 400
 
     # 根据不同邮箱类型验证参数并添加
+    def _validation_failed(message=None):
+        error_message = message or '添加的邮箱无效，请检查输入的内容是否有误后重新添加'
+        logger.warning(
+            "邮箱验证失败: %s (用户ID: %s) - %s",
+            email,
+            current_user['id'],
+            error_message
+        )
+        return jsonify({
+            'message': '添加的邮箱无效，请检查输入的内容是否有误后重新添加'
+        }), 400
+
     if mail_type == 'outlook':
         client_id = data.get('client_id')
         refresh_token = data.get('refresh_token')
 
         if not client_id or not refresh_token:
             return jsonify({'error': 'Outlook邮箱需要提供Client ID和Refresh Token'}), 400
+        is_valid, validation_message = verify_email_credentials(
+            mail_type,
+            email,
+            password=password,
+            client_id=client_id,
+            refresh_token=refresh_token
+        )
+        if not is_valid:
+            return _validation_failed(validation_message)
 
         success = db.add_email(
             current_user['id'],
@@ -434,19 +519,36 @@ def add_email(current_user):
             password,
             client_id,
             refresh_token,
-            mail_type
+            mail_type,
+            status='active',
+            status_message=validation_message
         )
     elif mail_type in ['imap', 'gmail', 'qq']:
         # Gmail和QQ邮箱使用IMAP协议，服务器和端口是固定的
         if mail_type == 'gmail':
             server = 'imap.gmail.com'
             port = 993
+            use_ssl = True
         elif mail_type == 'qq':
             server = 'imap.qq.com'
             port = 993
+            use_ssl = True
         else:
-            server = data.get('server', 'imap.gmail.com')
-            port = data.get('port', 993)
+            use_ssl = data.get('use_ssl', True)
+            server = data.get('server')
+            port = data.get('port', 993 if use_ssl else 143)
+
+        is_valid, validation_message = verify_email_credentials(
+            mail_type,
+            email,
+            password=password,
+            server=server,
+            port=port,
+            use_ssl=use_ssl
+        )
+
+        if not is_valid:
+            return _validation_failed(validation_message)
 
         success = db.add_email(
             current_user['id'],
@@ -455,13 +557,20 @@ def add_email(current_user):
             mail_type=mail_type,
             server=server,
             port=port,
-            use_ssl=True
+            use_ssl=use_ssl,
+            status='active',
+            status_message=validation_message
         )
     else:
         return jsonify({'error': f'不支持的邮箱类型: {mail_type}'}), 400
 
     if success:
-        return jsonify({'message': f'邮箱 {email} 添加成功'})
+        return jsonify({
+            'message': '添加成功',
+            'status': 'active',
+            'status_message': validation_message or '邮箱连接验证成功',
+            'email_id': success
+        })
     else:
         return jsonify({'error': f'邮箱 {email} 已存在或添加失败'}), 409
 

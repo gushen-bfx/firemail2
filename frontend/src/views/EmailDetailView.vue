@@ -23,6 +23,20 @@
     <div class="email-info" v-if="email">
       <el-descriptions title="邮箱信息" :column="1" border>
         <el-descriptions-item label="邮箱地址">{{ email.email }}</el-descriptions-item>
+        <el-descriptions-item label="邮箱状态">
+          <el-tooltip
+            v-if="email.status_message"
+            :content="email.status_message"
+            placement="top"
+          >
+            <el-tag :type="getStatusTagType(email.status)" class="status-tag">
+              {{ getStatusText(email.status) }}
+            </el-tag>
+          </el-tooltip>
+          <el-tag v-else :type="getStatusTagType(email.status)" class="status-tag">
+            {{ getStatusText(email.status) }}
+          </el-tag>
+        </el-descriptions-item>
         <el-descriptions-item label="最后检查时间">{{ formatDate(email.last_check_time) }}</el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatDate(email.created_at) }}</el-descriptions-item>
       </el-descriptions>
@@ -177,6 +191,25 @@ const filteredMailRecords = computed(() => {
 const getProcessingStatus = (id) => {
   return emailsStore.getProcessingStatus(id)
 }
+
+const STATUS_TEXT_MAP = {
+  active: '正常',
+  checking: '检查中',
+  error: '异常',
+  invalid: '无效',
+  unknown: '未检查'
+}
+
+const STATUS_TAG_TYPE_MAP = {
+  active: 'success',
+  checking: 'warning',
+  error: 'danger',
+  invalid: 'danger',
+  unknown: 'info'
+}
+
+const getStatusText = (status) => STATUS_TEXT_MAP[status] || STATUS_TEXT_MAP.unknown
+const getStatusTagType = (status) => STATUS_TAG_TYPE_MAP[status] || STATUS_TAG_TYPE_MAP.unknown
 
 // 格式化日期
 const formatDate = (dateString) => {
@@ -540,6 +573,13 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+.status-tag {
+  min-width: 72px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
 }
 
 .html-content {

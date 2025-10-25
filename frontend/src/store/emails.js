@@ -130,19 +130,70 @@ export const useEmailsStore = defineStore('emails', {
       this.error = null;
 
       try {
-        console.log('添加邮箱：', {...emailData, password: '******'});
+        console.log('添加邮箱：', { ...emailData, password: '******' });
+
         if (!websocket.isConnected) {
-          await api.emails.add(emailData);
-        } else {
-          // 确保mail_type参数正确传递
-          const wsData = {
-            ...emailData,
-            mail_type: emailData.mail_type || 'imap' // 默认使用imap类型
-          };
-          websocket.send('add_email', wsData);
+          const response = await api.emails.add(emailData);
+          return response.data;
         }
+
+        const wsData = {
+          ...emailData,
+          mail_type: emailData.mail_type || 'imap'
+        };
+
+        return await new Promise((resolve, reject) => {
+          let timeoutId = null;
+
+          function handleSuccess(message) {
+            if (message?.email !== wsData.email) {
+              return;
+            }
+
+            cleanup();
+            resolve({
+              message: message.message,
+              status: message.status,
+              status_message: message.status_message,
+              email_id: message.email_id
+            });
+          }
+
+          function handleError(message) {
+            const errorMessage = message?.message;
+            if (typeof errorMessage !== 'string' || !errorMessage.includes('添加')) {
+              return;
+            }
+
+            cleanup();
+            reject(new Error(errorMessage));
+          }
+
+          function cleanup() {
+            if (timeoutId) {
+              clearTimeout(timeoutId);
+              timeoutId = null;
+            }
+            websocket.offMessage('email_added', handleSuccess);
+            websocket.offMessage('error', handleError);
+          }
+
+          timeoutId = setTimeout(() => {
+            cleanup();
+            reject(new Error('添加邮箱超时，请稍后重试'));
+          }, 15000);
+
+          websocket.onMessage('email_added', handleSuccess);
+          websocket.onMessage('error', handleError);
+
+          const sent = websocket.addEmail(wsData);
+          if (!sent) {
+            cleanup();
+            reject(new Error('WebSocket未连接，添加邮箱失败'));
+          }
+        });
       } catch (error) {
-        this.error = '添加邮箱失败';
+        this.error = error?.message || '添加邮箱失败';
         throw error;
       } finally {
         this.loading = false;

@@ -7,6 +7,8 @@ import jwt
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+from utils.email.validation import verify_email_credentials
+
 # 配置日志
 logger = logging.getLogger('websocket')
 
@@ -356,14 +358,27 @@ class WebSocketHandler:
             server = data.get('server')
             port = data.get('port')
             use_ssl = data.get('use_ssl', True)
-            
+
             if not email or not password:
                 await websocket.send(json.dumps({
                     'type': 'error',
                     'message': '邮箱地址和密码不能为空'
                 }))
                 return
-            
+
+            async def _validation_failed(message=None):
+                error_message = message or '添加的邮箱无效，请检查输入的内容是否有误后重新添加'
+                logger.warning(
+                    "邮箱验证失败: %s (用户ID: %s) - %s",
+                    email,
+                    user_id,
+                    error_message
+                )
+                await self._send_validation_failure(websocket)
+                return
+
+            validation_message = None
+
             # 根据不同邮箱类型处理
             if mail_type == 'outlook':
                 if not client_id or not refresh_token:
@@ -372,28 +387,83 @@ class WebSocketHandler:
                         'message': 'Outlook邮箱需要提供Client ID和Refresh Token'
                     }))
                     return
-                email_id = self.db.add_email(user_id, email, password, client_id, refresh_token, mail_type)
-            else:  # imap类型
+
+                is_valid, validation_message = verify_email_credentials(
+                    mail_type,
+                    email,
+                    password=password,
+                    client_id=client_id,
+                    refresh_token=refresh_token
+                )
+
+                if not is_valid:
+                    await _validation_failed(validation_message)
+                    return
+
                 email_id = self.db.add_email(
-                    user_id, 
-                    email, 
-                    password, 
-                    mail_type=mail_type,
+                    user_id,
+                    email,
+                    password,
+                    client_id,
+                    refresh_token,
+                    mail_type,
+                    status='active',
+                    status_message=validation_message
+                )
+            elif mail_type in ['imap', 'gmail', 'qq']:
+                if mail_type == 'gmail':
+                    server = 'imap.gmail.com'
+                    port = 993
+                    use_ssl = True
+                elif mail_type == 'qq':
+                    server = 'imap.qq.com'
+                    port = 993
+                    use_ssl = True
+
+                is_valid, validation_message = verify_email_credentials(
+                    mail_type,
+                    email,
+                    password=password,
                     server=server,
                     port=port,
                     use_ssl=use_ssl
                 )
-            
+
+                if not is_valid:
+                    await _validation_failed(validation_message)
+                    return
+
+                email_id = self.db.add_email(
+                    user_id,
+                    email,
+                    password,
+                    mail_type=mail_type,
+                    server=server,
+                    port=port,
+                    use_ssl=use_ssl,
+                    status='active',
+                    status_message=validation_message
+                )
+            else:
+                await websocket.send(json.dumps({
+                    'type': 'error',
+                    'message': f'不支持的邮箱类型: {mail_type}'
+                }))
+                return
+
             if email_id:
-                # 发送成功消息
+                response_message = validation_message or '邮箱连接验证成功'
                 await websocket.send(json.dumps({
                     'type': 'email_added',
-                    'message': f'邮箱 {email} 添加成功'
+                    'message': '添加成功',
+                    'email': email,
+                    'email_id': email_id,
+                    'status': 'active',
+                    'status_message': response_message
                 }))
-                
-                logger.info(f"用户ID {user_id} 添加了邮箱: {email}, 类型: {mail_type}")
+
+                logger.info(f"用户ID {user_id} 添加了邮箱: {email}, 类型: {mail_type}, 状态: active")
             else:
-                # 发送错误消息
                 await websocket.send(json.dumps({
                     'type': 'error',
                     'message': f'邮箱 {email} 添加失败，可能已存在'
@@ -404,6 +474,13 @@ class WebSocketHandler:
                 'type': 'error',
                 'message': f'添加邮箱失败: {str(e)}'
             }))
+
+    async def _send_validation_failure(self, websocket):
+        """发送邮箱验证失败的消息"""
+        await websocket.send(json.dumps({
+            'type': 'error',
+            'message': '添加的邮箱无效，请检查输入的内容是否有误后重新添加'
+        }))
     
     async def handle_delete_emails(self, websocket, user_id, data):
         """处理删除邮箱的请求"""
