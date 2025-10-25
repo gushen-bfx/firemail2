@@ -639,6 +639,24 @@ class Database:
                         [encrypted, row_dict['id']],
                         commit=True
                     )
+
+            cursor = self._execute(
+                "SELECT id, password FROM users",
+                commit=False
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                row_dict = self._row_to_dict(row)
+                if not row_dict:
+                    continue
+                password = row_dict.get('password')
+                if password and not self._is_encrypted(password):
+                    encrypted_password = self._encrypt_value(password)
+                    self._execute(
+                        "UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        [encrypted_password, row_dict['id']],
+                        commit=True
+                    )
         except Exception as e:
             logger.error(f"加密已有敏感数据时发生错误: {str(e)}")
 
@@ -762,6 +780,9 @@ class Database:
             logger.warning(f"用户不存在: {username}")
             return None
 
+        if 'is_admin' in user and user['is_admin'] is not None:
+            user['is_admin'] = bool(user['is_admin'])
+
         # 尝试新的密码哈希验证方式
         if user['password_hash'] and user['salt']:
             password_hash = self._hash_password(password, user['salt'])
@@ -770,15 +791,17 @@ class Database:
                 return {'id': user['id'], 'username': user['username'], 'is_admin': user['is_admin']}
 
         # 如果未设置哈希或哈希验证失败，尝试使用旧的方式（直接比较密码）
-        if user['password'] == password:
+        stored_password = self._decrypt_value(user.get('password')) if user.get('password') else None
+        if stored_password == password:
             logger.info(f"用户 {username} 使用旧密码格式验证成功，将自动升级到哈希格式")
             # 自动升级到新的密码哈希格式
             try:
                 salt = secrets.token_hex(16)
                 password_hash = self._hash_password(password, salt)
+                encrypted_password = self._encrypt_value(password) if password else None
                 self._execute(
-                    "UPDATE users SET password_hash = ?, salt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    [password_hash, salt, user['id']],
+                    "UPDATE users SET password = ?, password_hash = ?, salt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    [encrypted_password, password_hash, salt, user['id']],
                     commit=True
                 )
                 logger.info(f"用户 {username} 密码已自动升级到哈希格式")
@@ -797,7 +820,60 @@ class Database:
             [user_id],
             commit=False
         )
-        return cursor.fetchone()
+        user = self._row_to_dict(cursor.fetchone())
+        if user and 'is_admin' in user and user['is_admin'] is not None:
+            user['is_admin'] = bool(user['is_admin'])
+        return user
+
+    def is_username_taken(self, username: str, exclude_user_id: Optional[int] = None) -> bool:
+        params: List[Any] = [username]
+        query = "SELECT 1 FROM users WHERE username = ?"
+        if exclude_user_id is not None:
+            query += " AND id != ?"
+            params.append(exclude_user_id)
+
+        existing = self._execute(query, params, commit=False).fetchone()
+        return existing is not None
+
+    def count_admin_users(self) -> int:
+        cursor = self._execute(
+            "SELECT COUNT(*) AS total FROM users WHERE is_admin = ?",
+            [self._bool_value(True)],
+            commit=False
+        )
+        row = cursor.fetchone()
+        if not row:
+            return 0
+        if isinstance(row, dict):
+            return row.get('total', 0)
+        return row[0]
+
+    def update_user(self, user_id: int, username: Optional[str] = None, is_admin: Optional[bool] = None) -> bool:
+        try:
+            update_fields = []
+            params: List[Any] = []
+
+            if username is not None:
+                update_fields.append("username = ?")
+                params.append(username)
+
+            if is_admin is not None:
+                update_fields.append("is_admin = ?")
+                params.append(self._bool_value(is_admin))
+
+            if not update_fields:
+                return False
+
+            update_fields.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(user_id)
+
+            sql = f"UPDATE users SET {', '.join(update_fields)} WHERE id = ?"
+            self._execute(sql, params, commit=True)
+            logger.info(f"用户ID {user_id} 更新成功")
+            return True
+        except Exception as e:
+            logger.error(f"更新用户失败: {str(e)}")
+            return False
 
     def create_user(self, username, password, is_admin=False):
         """创建新用户"""
@@ -824,10 +900,11 @@ class Database:
 
             salt = secrets.token_hex(16)
             password_hash = self._hash_password(password, salt)
+            encrypted_password = self._encrypt_value(password) if password else None
 
             self._execute(
                 "INSERT INTO users (username, password, password_hash, salt, is_admin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                (username, password, password_hash, salt, self._bool_value(is_admin)),
+                (username, encrypted_password, password_hash, salt, self._bool_value(is_admin)),
                 commit=True
             )
             logger.info(f"创建用户成功: {username}, 管理员权限: {is_admin}")
@@ -841,10 +918,11 @@ class Database:
         try:
             salt = secrets.token_hex(16)
             password_hash = self._hash_password(new_password, salt)
+            encrypted_password = self._encrypt_value(new_password) if new_password else None
 
             self._execute(
                 "UPDATE users SET password = ?, password_hash = ?, salt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [new_password, password_hash, salt, user_id],
+                [encrypted_password, password_hash, salt, user_id],
                 commit=True
             )
             logger.info(f"用户ID {user_id} 密码更新成功")
@@ -879,7 +957,11 @@ class Database:
     def get_all_users(self):
         """获取所有用户"""
         cursor = self._execute("SELECT id, username, is_admin, created_at FROM users ORDER BY created_at DESC", commit=False)
-        return self._rows_to_dicts(cursor.fetchall())
+        users = self._rows_to_dicts(cursor.fetchall())
+        for user in users:
+            if 'is_admin' in user and user['is_admin'] is not None:
+                user['is_admin'] = bool(user['is_admin'])
+        return users
 
     # 邮箱相关方法
     def add_email(self, user_id, email, password, client_id=None, refresh_token=None, mail_type='outlook', server=None, port=None, use_ssl=True):

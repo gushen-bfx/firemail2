@@ -319,6 +319,69 @@ def create_user(current_user):
         'is_admin': is_admin
     })
 
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+@token_required
+@admin_required
+def update_user(current_user, user_id):
+    """更新用户信息 (仅管理员)"""
+    data = request.json or {}
+    username = data.get('username') if 'username' in data else None
+    is_admin_raw = data.get('is_admin') if 'is_admin' in data else None
+
+    if username is None and 'is_admin' not in data:
+        return jsonify({'error': '没有需要更新的字段'}), 400
+
+    target_user = db.get_user_by_id(user_id)
+    if not target_user:
+        return jsonify({'error': '用户不存在'}), 404
+
+    if username is not None:
+        username = username.strip()
+        if not username:
+            return jsonify({'error': '用户名不能为空'}), 400
+        if len(username) < 3 or len(username) > 20:
+            return jsonify({'error': '用户名长度必须在3-20个字符之间'}), 400
+        if username != target_user['username'] and db.is_username_taken(username, exclude_user_id=user_id):
+            return jsonify({'error': '用户名已存在'}), 409
+
+    is_admin = None
+    if 'is_admin' in data:
+        value = is_admin_raw
+        if isinstance(value, str):
+            value = value.strip().lower()
+            if value in {'true', '1', 'yes', 'y', 't'}:
+                value = True
+            elif value in {'false', '0', 'no', 'n', 'f'}:
+                value = False
+            else:
+                return jsonify({'error': 'is_admin参数无效'}), 400
+        elif isinstance(value, bool):
+            pass
+        elif value is None:
+            return jsonify({'error': 'is_admin参数无效'}), 400
+        else:
+            return jsonify({'error': 'is_admin参数无效'}), 400
+
+        is_admin = bool(value)
+
+        if not is_admin and target_user.get('is_admin'):
+            if current_user['id'] == user_id:
+                return jsonify({'error': '不能移除自身的管理员权限'}), 400
+            total_admins = db.count_admin_users()
+            if total_admins <= 1:
+                return jsonify({'error': '至少需要保留一个管理员账户'}), 400
+
+    success = db.update_user(user_id, username=username if username is not None else None, is_admin=is_admin)
+    if not success:
+        return jsonify({'error': '用户更新失败'}), 500
+
+    updated_user = db.get_user_by_id(user_id)
+    return jsonify({
+        'id': updated_user['id'],
+        'username': updated_user['username'],
+        'is_admin': updated_user['is_admin']
+    })
+
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 @token_required
 @admin_required
