@@ -487,9 +487,14 @@ def add_email(current_user):
     # 根据不同邮箱类型验证参数并添加
     def _validation_failed(message=None):
         error_message = message or '添加的邮箱无效，请检查输入的内容是否有误后重新添加'
+        logger.warning(
+            "邮箱验证失败: %s (用户ID: %s) - %s",
+            email,
+            current_user['id'],
+            error_message
+        )
         return jsonify({
-            'error': '添加的邮箱无效，请检查输入的内容是否有误后重新添加',
-            'details': error_message
+            'message': '添加的邮箱无效，请检查输入的内容是否有误后重新添加'
         }), 400
 
     if mail_type == 'outlook':
@@ -561,7 +566,7 @@ def add_email(current_user):
 
     if success:
         return jsonify({
-            'message': f'邮箱 {email} 添加成功',
+            'message': '添加成功',
             'status': 'active',
             'status_message': validation_message or '邮箱连接验证成功',
             'email_id': success
