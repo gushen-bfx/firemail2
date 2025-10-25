@@ -1,36 +1,31 @@
-name: CI
+name: Build and publish container
 
 on:
   push:
-  pull_request:
+    branches: [ "main" ]
+
+# grant GITHUB_TOKEN the right to write packages
+permissions:
+  contents: read
+  packages: write
 
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v2
         with:
-          python-version: '3.11'
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compile backend sources
-        run: python -m compileall backend
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
+      - name: Build and push image
+        uses: docker/build-push-action@v4
         with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/firemail2:latest
