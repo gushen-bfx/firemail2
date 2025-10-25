@@ -43,7 +43,8 @@ jobs:
           short_sha="$(echo "${GITHUB_SHA}" | cut -c1-7)"
 
           if [[ -n "${DOCKER_HUB_USERNAME:-}" && -n "${DOCKER_HUB_TOKEN:-}" ]]; then
-            image="${DOCKER_HUB_USERNAME}/FireMail"
+            repo_name="$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')"
+            image="${DOCKER_HUB_USERNAME}/${repo_name}"
             docker_tags=("${image}:sha-${short_sha}")
             if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
               if [[ "${GITHUB_REF}" == "refs/heads/${default_branch}" ]]; then
