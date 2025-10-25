@@ -1,4 +1,4 @@
-name: Build and Publish Docker Image
+name: Build and Publish Docker Images
 
 on:
   push:
@@ -9,8 +9,37 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  DOCKER_DEFAULT_PLATFORM: linux/amd64
+
 jobs:
-  build-and-push:
+  build:
+    name: Build (validation)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build image locally
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: local/firemail2:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    name: Build and push release images
+    needs: build
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,104 +59,66 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      - name: Prepare image tags
+      - name: Prepare tags
         id: prep
         run: |
           set -euo pipefail
 
-          default_branch="${DEFAULT_BRANCH:-main}"
-          push_images="false"
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            push_images="true"
+          if [[ -z "${DOCKER_HUB_USERNAME:-}" || -z "${DOCKER_HUB_TOKEN:-}" ]]; then
+            echo "::error::Docker Hub credentials are required. Set DOCKER_HUB_USERNAME and DOCKER_HUB_TOKEN secrets."
+            exit 1
           fi
 
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::GH_TOKEN with write:packages scope is required to publish to GHCR."
+            exit 1
+          fi
+
+          repo_lower="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          docker_repo="${DOCKER_HUB_USERNAME}/$(basename "${repo_lower}")"
+          ghcr_repo="ghcr.io/${repo_lower}"
           short_sha="$(echo "${GITHUB_SHA}" | cut -c1-7)"
 
-          docker_tags=()
-          if [[ -n "${DOCKER_HUB_USERNAME:-}" && -n "${DOCKER_HUB_TOKEN:-}" ]]; then
-            repo_name="$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')"
-            image="${DOCKER_HUB_USERNAME}/${repo_name}"
-            docker_tags+=("${image}:sha-${short_sha}")
-            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-              if [[ "${GITHUB_REF}" == "refs/heads/${default_branch}" ]]; then
-                docker_tags+=("${image}:latest")
-              elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-                version="${GITHUB_REF#refs/tags/}"
-                docker_tags+=("${image}:${version}")
-                docker_tags+=("${image}:latest")
-              fi
-            fi
-          elif [[ "${push_images}" == "true" ]]; then
-            echo "::error::Docker Hub credentials are required for push workflows. Set DOCKER_HUB_USERNAME and DOCKER_HUB_TOKEN secrets."
-            exit 1
-          fi
+          mapfile -t tags < <(printf '%s\n' \
+            "${docker_repo}:sha-${short_sha}" \
+            "${ghcr_repo}:sha-${short_sha}")
 
-          ghcr_tags=()
-          if [[ -n "${GH_TOKEN:-}" ]]; then
-            ghcr_repo="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
-            image="ghcr.io/${ghcr_repo}"
-            ghcr_tags+=("${image}:sha-${short_sha}")
-            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-              if [[ "${GITHUB_REF}" == "refs/heads/${default_branch}" ]]; then
-                ghcr_tags+=("${image}:latest")
-              elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-                version="${GITHUB_REF#refs/tags/}"
-                ghcr_tags+=("${image}:${version}")
-                ghcr_tags+=("${image}:latest")
-              fi
-            fi
-          elif [[ "${push_images}" == "true" ]]; then
-            echo "::error::GH_TOKEN with write:packages scope is required for push workflows."
-            exit 1
+          if [[ "${GITHUB_REF}" == "refs/heads/${DEFAULT_BRANCH}" ]]; then
+            tags+=("${docker_repo}:latest")
+            tags+=("${ghcr_repo}:latest")
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            version="${GITHUB_REF#refs/tags/}"
+            tags+=("${docker_repo}:${version}")
+            tags+=("${ghcr_repo}:${version}")
+            tags+=("${docker_repo}:latest")
+            tags+=("${ghcr_repo}:latest")
           fi
 
           {
-            printf 'docker_tags<<EOF\n'
-            printf '%s\n' "${docker_tags[@]}"
+            printf 'tags<<EOF\n'
+            printf '%s\n' "${tags[@]}"
             printf 'EOF\n'
           } >> "${GITHUB_OUTPUT}"
 
-          {
-            printf 'ghcr_tags<<EOF\n'
-            printf '%s\n' "${ghcr_tags[@]}"
-            printf 'EOF\n'
-          } >> "${GITHUB_OUTPUT}"
-
-          echo "push=${push_images}" >> "${GITHUB_OUTPUT}"
-
-      - name: Login to Docker Hub
-        if: ${{ steps.prep.outputs.docker_tags != '' }}
+      - name: Log in to Docker Hub
         uses: docker/login-action@v2
         with:
           username: ${{ env.DOCKER_HUB_USERNAME }}
           password: ${{ env.DOCKER_HUB_TOKEN }}
 
-      - name: Login to GitHub Container Registry
-        if: ${{ steps.prep.outputs.ghcr_tags != '' }}
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ env.GH_TOKEN }}
 
-      - name: Build Docker Hub image
-        if: ${{ steps.prep.outputs.docker_tags != '' }}
+      - name: Build and push multi-arch images
         uses: docker/build-push-action@v4
         with:
           context: .
-          push: ${{ steps.prep.outputs.push == 'true' }}
+          push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.prep.outputs.docker_tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build GHCR image
-        if: ${{ steps.prep.outputs.ghcr_tags != '' }}
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: ${{ steps.prep.outputs.push == 'true' }}
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.prep.outputs.ghcr_tags }}
+          tags: ${{ steps.prep.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
