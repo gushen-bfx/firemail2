@@ -1218,6 +1218,8 @@ const resetEditForm = () => {
 const submitEditForm = async () => {
   if (!editFormRef.value) return
 
+  let loadingInstance = null
+
   try {
     await editFormRef.value.validate()
 
@@ -1229,24 +1231,30 @@ const submitEditForm = async () => {
       delete formData.password
     }
 
-    const loading = ElLoading.service({
+    // 不需要发送ID字段
+    const emailId = formData.id
+    delete formData.id
+
+    loadingInstance = ElLoading.service({
       lock: true,
       text: '正在更新邮箱...',
       background: 'rgba(0, 0, 0, 0.7)'
     })
 
-    await emailsStore.updateEmail(formData.id, formData)
+    const result = await emailsStore.updateEmail(emailId, formData)
     editDialogVisible.value = false
 
     // 刷新邮箱列表
     await refreshEmails()
 
-    ElMessage.success('邮箱更新成功')
+    ElMessage.success(result?.message || '邮箱更新成功')
   } catch (error) {
     console.error('更新邮箱失败:', error)
     ElMessage.error('更新邮箱失败: ' + (error.message || '未知错误'))
   } finally {
-    ElLoading.service().close()
+    if (loadingInstance) {
+      loadingInstance.close()
+    }
   }
 }
 

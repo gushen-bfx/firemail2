@@ -428,28 +428,40 @@ export const useEmailsStore = defineStore('emails', {
     },
 
     // 更新邮箱
-    async updateEmail(email) {
+    async updateEmail(emailId, updates = {}) {
       try {
-        // 确保IMAP类型邮箱的use_ssl是布尔值
-        const emailData = { ...email }
-        if (emailData.mail_type === 'imap' && 'use_ssl' in emailData) {
-          emailData.use_ssl = Boolean(emailData.use_ssl)
+        if (!emailId) {
+          throw new Error('缺少邮箱ID');
         }
 
-        // 使用api对象调用，确保使用正确的基础URL
-        console.log(`更新邮箱 ID:${emailData.id}`);
-        const response = await api.put(`/emails/${emailData.id}`, emailData);
+        // 确保IMAP类型邮箱的use_ssl是布尔值
+        const payload = { ...updates };
+        delete payload.id;
+
+        if (payload.mail_type === 'imap' && 'use_ssl' in payload) {
+          payload.use_ssl = Boolean(payload.use_ssl);
+        }
+
+        console.log(`更新邮箱 ID:${emailId}`);
+        const response = await api.emails.update(emailId, payload);
+        const responseData = response?.data?.data || {};
 
         // 更新本地邮箱数据
-        const index = this.emails.findIndex(e => e.id === emailData.id);
+        const index = this.emails.findIndex(e => e.id === emailId);
         if (index !== -1) {
-          this.emails[index] = { ...this.emails[index], ...emailData };
+          this.emails[index] = {
+            ...this.emails[index],
+            ...payload,
+            ...responseData,
+            id: emailId
+          };
         }
 
-        return true;
+        return response?.data || { message: '邮箱信息更新成功' };
       } catch (error) {
         console.error('更新邮箱失败:', error);
-        throw error;
+        const errorMessage = error?.response?.data?.error || error.message || '更新邮箱失败';
+        throw new Error(errorMessage);
       }
     }
   }

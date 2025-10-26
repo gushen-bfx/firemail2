@@ -235,6 +235,10 @@ const apiMethods = {
     });
   },
 
+  updateEmail: (emailId, emailData) => {
+    return api.put(`/emails/${emailId}`, emailData);
+  },
+
   deleteEmail: (id) => {
     return api.delete(`/emails/${id}`);
   },
@@ -273,6 +277,7 @@ const apiMethods = {
     getPassword: (emailId) => api.get(`/emails/${emailId}/password`).then(res => res.data),
     getRecords: (emailId) => api.get(`/emails/${emailId}/mail_records`).then(res => res.data),
     add: (emailData) => api.post('/emails', emailData),
+    update: (emailId, emailData) => api.put(`/emails/${emailId}`, emailData),
     check: (emailIds) => {
       if (Array.isArray(emailIds) && emailIds.length === 1) {
         return api.post(`/emails/${emailIds[0]}/check`);
