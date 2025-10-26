@@ -143,7 +143,6 @@ export const useEmailsStore = defineStore('emails', {
         };
 
         return await new Promise((resolve, reject) => {
-          let timeoutId = null;
 
           function handleSuccess(message) {
             if (message?.email !== wsData.email) {
@@ -170,18 +169,9 @@ export const useEmailsStore = defineStore('emails', {
           }
 
           function cleanup() {
-            if (timeoutId) {
-              clearTimeout(timeoutId);
-              timeoutId = null;
-            }
             websocket.offMessage('email_added', handleSuccess);
             websocket.offMessage('error', handleError);
           }
-
-          timeoutId = setTimeout(() => {
-            cleanup();
-            reject(new Error('添加邮箱超时，请稍后重试'));
-          }, 15000);
 
           websocket.onMessage('email_added', handleSuccess);
           websocket.onMessage('error', handleError);
