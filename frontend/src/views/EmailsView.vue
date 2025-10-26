@@ -225,6 +225,22 @@
                 <el-form-item label="Refresh Token" prop="refresh_token">
                   <el-input v-model="addEmailForm.refresh_token" placeholder="请输入Refresh Token" />
                 </el-form-item>
+
+                <el-form-item label="Tenant ID" prop="tenant_id">
+                  <el-input
+                    v-model="addEmailForm.tenant_id"
+                    placeholder="默认 common，可填写 organizations/consumers"
+                  />
+                </el-form-item>
+
+                <el-form-item label="Client Secret" prop="client_secret">
+                  <el-input
+                    v-model="addEmailForm.client_secret"
+                    type="password"
+                    show-password
+                    placeholder="若使用机密客户端请填写，可留空"
+                  />
+                </el-form-item>
               </template>
 
               <template v-if="addEmailForm.mail_type === 'imap'">
@@ -244,7 +260,7 @@
           </el-tab-pane>
 
           <el-tab-pane label="批量添加" name="batch">
-            <p class="import-help">请按照以下格式输入邮箱信息，每行一个：<br/>邮箱地址----密码----客户端ID----刷新令牌</p>
+            <p class="import-help">请按照以下格式输入邮箱信息，每行一个：<br/>邮箱地址----密码----客户端ID----刷新令牌[----Tenant ID][----Client Secret]</p>
             <el-form :model="batchImport" label-width="120px" :rules="batchImportRules" ref="batchImportFormRef">
               <el-form-item label="邮箱类型">
                 <el-select v-model="batchImport.mailType" placeholder="请选择邮箱类型">
@@ -259,7 +275,7 @@
                   v-model="batchImport.data"
                   type="textarea"
                   :rows="10"
-                  placeholder="例如: example@outlook.com----password----clientid----refreshtoken"
+                  placeholder="例如: example@outlook.com----password----clientid----refreshtoken----common----clientsecret"
                 />
               </el-form-item>
             </el-form>
@@ -451,6 +467,12 @@
             <el-form-item label="Refresh Token" prop="refresh_token">
               <el-input v-model="editForm.refresh_token" />
             </el-form-item>
+            <el-form-item label="Tenant ID" prop="tenant_id">
+              <el-input v-model="editForm.tenant_id" />
+            </el-form-item>
+            <el-form-item label="Client Secret" prop="client_secret">
+              <el-input v-model="editForm.client_secret" type="password" show-password />
+            </el-form-item>
           </template>
         </el-form>
         <template #footer>
@@ -561,6 +583,8 @@ const addEmailForm = ref({
   password: '',
   client_id: '',
   refresh_token: '',
+  tenant_id: 'common',
+  client_secret: '',
   server: '',
   port: 993,
   use_ssl: true
@@ -593,9 +617,9 @@ const batchImportRules = {
           // 根据不同邮箱类型进行不同的验证
           if (batchImport.mailType === 'outlook') {
             const parts = line.split('----')
-            if (parts.length !== 4) {
+            if (parts.length < 4) {
               hasError = true
-              callback(new Error(`第 ${i + 1} 行格式错误，请使用"----"分隔邮箱、密码、客户端ID和RefreshToken`))
+              callback(new Error(`第 ${i + 1} 行格式错误，请使用"----"分隔邮箱、密码、Client ID、Refresh Token，可选 Tenant ID、Client Secret`))
               break
             }
 
@@ -627,7 +651,16 @@ const batchImportRules = {
 const addEmailRules = {
   mail_type: [{ required: true, message: '请选择邮箱类型', trigger: 'change' }],
   email: [{ required: true, message: '请输入邮箱地址', trigger: 'blur' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+  password: [{
+    validator: (rule, value, callback) => {
+      if (addEmailForm.value.mail_type !== 'outlook' && !value) {
+        callback(new Error('请输入密码'))
+      } else {
+        callback()
+      }
+    },
+    trigger: 'blur'
+  }],
   client_id: [{ required: true, message: '请输入Client ID', trigger: 'blur', validator: (rule, value, callback) => {
     if (addEmailForm.value.mail_type === 'outlook' && !value) {
       callback(new Error('请输入Client ID'))
@@ -844,14 +877,21 @@ const handleAddEmail = async () => {
     })
 
     const formData = {
-      email: addEmailForm.value.email,
-      password: addEmailForm.value.password,
+      email: addEmailForm.value.email.trim(),
       mail_type: addEmailForm.value.mail_type
+    }
+
+    if (addEmailForm.value.password) {
+      formData.password = addEmailForm.value.password
     }
 
     if (addEmailForm.value.mail_type === 'outlook') {
       formData.client_id = addEmailForm.value.client_id
       formData.refresh_token = addEmailForm.value.refresh_token
+      formData.tenant_id = addEmailForm.value.tenant_id || 'common'
+      if (addEmailForm.value.client_secret) {
+        formData.client_secret = addEmailForm.value.client_secret
+      }
     } else if (addEmailForm.value.mail_type === 'imap') {
       formData.server = addEmailForm.value.server
       formData.port = addEmailForm.value.port
@@ -913,6 +953,8 @@ const resetAddEmailForm = () => {
     password: '',
     client_id: '',
     refresh_token: '',
+    tenant_id: 'common',
+    client_secret: '',
     server: '',
     port: 993,
     use_ssl: true
@@ -1076,6 +1118,12 @@ const handleEdit = (email) => {
   if (emailData.mail_type === 'imap') {
     emailData.use_ssl = Boolean(emailData.use_ssl)
   }
+  if (!emailData.tenant_id) {
+    emailData.tenant_id = 'common'
+  }
+  if (!emailData.client_secret) {
+    emailData.client_secret = ''
+  }
   editForm.value = emailData
   editDialogVisible.value = true
 }
@@ -1092,7 +1140,9 @@ const editForm = ref({
   port: 993,
   use_ssl: true,
   client_id: '',
-  refresh_token: ''
+  refresh_token: '',
+  tenant_id: 'common',
+  client_secret: ''
 })
 
 // 密码强度相关
@@ -1136,10 +1186,17 @@ const editRules = {
     { required: true, message: '邮箱地址不能为空', trigger: 'blur' },
     { type: 'email', message: '邮箱地址格式不正确', trigger: 'blur' }
   ],
-  password: [
-    { required: true, message: '密码不能为空', trigger: 'blur' },
-    { min: 6, message: '密码长度不能小于6位', trigger: 'blur' }
-  ],
+  password: [{
+    validator: (rule, value, callback) => {
+      const needsPassword = editForm.value.mail_type !== 'outlook'
+      if (needsPassword && (!value || value === '******')) {
+        callback(new Error('密码不能为空'))
+      } else {
+        callback()
+      }
+    },
+    trigger: 'blur'
+  }],
   server: [
     { required: true, message: 'IMAP服务器地址不能为空', trigger: 'blur',
       // 仅当类型为imap时验证
@@ -1208,6 +1265,8 @@ const resetEditForm = () => {
     mail_type: 'outlook',
     client_id: '',
     refresh_token: '',
+    tenant_id: 'common',
+    client_secret: '',
     server: '',
     port: 993,
     use_ssl: true
@@ -1229,6 +1288,17 @@ const submitEditForm = async () => {
     // 如果密码仍然是默认的星号，则不发送密码更新
     if (formData.password === '******') {
       delete formData.password
+    }
+
+    if (typeof formData.tenant_id === 'string') {
+      formData.tenant_id = formData.tenant_id.trim() || 'common'
+    }
+
+    if (typeof formData.client_secret === 'string') {
+      formData.client_secret = formData.client_secret.trim()
+      if (!formData.client_secret) {
+        delete formData.client_secret
+      }
     }
 
     // 不需要发送ID字段

@@ -34,7 +34,7 @@ from .logger import (
     log_progress,
     timing_decorator
 )
-from .outlook import OutlookMailHandler
+from .outlook import OutlookMailHandler, OutlookOAuthError
 from .imap import IMAPMailHandler
 from .gmail import GmailHandler
 from .qq import QQMailHandler
@@ -314,6 +314,8 @@ class EmailBatchProcessor:
                 # 处理Outlook邮箱
                 refresh_token = email_info.get('refresh_token')
                 client_id = email_info.get('client_id')
+                tenant_id = email_info.get('tenant_id')
+                client_secret = email_info.get('client_secret')
 
                 if not refresh_token or not client_id:
                     error_msg = "缺少OAuth2.0认证信息"
@@ -323,17 +325,27 @@ class EmailBatchProcessor:
                     return result
 
                 try:
-                    access_token = OutlookMailHandler.get_new_access_token(refresh_token, client_id)
-                    if not access_token:
-                        error_msg = "获取访问令牌失败"
+                    try:
+                        token = OutlookMailHandler.acquire_token(
+                            refresh_token,
+                            client_id,
+                            tenant_id=tenant_id,
+                            client_secret=client_secret,
+                        )
+                    except OutlookOAuthError as oauth_error:
+                        error_msg = f"获取访问令牌失败: {oauth_error}"
                         if callback:
                             callback(0, error_msg)
                         result = {'success': False, 'message': error_msg}
                         return result
 
+                    access_token = token.access_token
+
                     # 更新邮箱的访问令牌
-                    self.db.update_email_token(email_id, access_token)
+                    self.db.update_email_tokens(email_id, access_token, token.refresh_token)
                     email_info['access_token'] = access_token
+                    if token.refresh_token:
+                        email_info['refresh_token'] = token.refresh_token
 
                     # 记录开始处理
                     log_email_start(email_info['email'], email_id)

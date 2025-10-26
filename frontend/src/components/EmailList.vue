@@ -147,6 +147,12 @@
           <el-form-item label="Refresh Token" prop="refresh_token">
             <el-input v-model="editForm.refresh_token" />
           </el-form-item>
+          <el-form-item label="Tenant ID" prop="tenant_id">
+            <el-input v-model="editForm.tenant_id" />
+          </el-form-item>
+          <el-form-item label="Client Secret" prop="client_secret">
+            <el-input v-model="editForm.client_secret" type="password" show-password />
+          </el-form-item>
         </template>
         <el-form-item v-if="editForm.mail_type === 'imap'">
           <el-button type="primary" @click="testConnection" :loading="testing">
@@ -185,7 +191,9 @@ const editForm = ref({
   port: 993,
   use_ssl: true,
   client_id: '',
-  refresh_token: ''
+  refresh_token: '',
+  tenant_id: 'common',
+  client_secret: ''
 })
 
 const passwordStrength = ref(0)
@@ -334,6 +342,12 @@ const editEmail = (email) => {
   if (emailData.mail_type === 'imap') {
     emailData.use_ssl = Boolean(emailData.use_ssl)
   }
+  if (!emailData.tenant_id) {
+    emailData.tenant_id = 'common'
+  }
+  if (!emailData.client_secret) {
+    emailData.client_secret = ''
+  }
   editForm.value = emailData
   editDialogVisible.value = true
 }
@@ -386,7 +400,9 @@ const resetEditForm = () => {
     port: 993,
     use_ssl: true,
     client_id: '',
-    refresh_token: ''
+    refresh_token: '',
+    tenant_id: 'common',
+    client_secret: ''
   }
 }
 

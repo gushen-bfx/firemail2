@@ -137,6 +137,8 @@ class Database:
             self._check_and_add_column('emails', 'enable_realtime_check', 'INTEGER DEFAULT 0')
             self._check_and_add_column('emails', 'status', "TEXT DEFAULT 'unknown'")
             self._check_and_add_column('emails', 'status_message', 'TEXT')
+            self._check_and_add_column('emails', 'tenant_id', 'TEXT')
+            self._check_and_add_column('emails', 'client_secret', 'TEXT')
             self._check_and_add_column('users', 'password_hash', 'TEXT NOT NULL')
 
             logger.info("初始化数据库表结构完成")
@@ -216,6 +218,8 @@ class Database:
                     use_ssl INTEGER DEFAULT 1,
                     client_id TEXT,
                     refresh_token TEXT,
+                    tenant_id TEXT,
+                    client_secret TEXT,
                     access_token TEXT,
                     last_check_time TIMESTAMP,
                     enable_realtime_check INTEGER DEFAULT 0,
@@ -291,6 +295,8 @@ class Database:
                     use_ssl BOOLEAN DEFAULT TRUE,
                     client_id TEXT,
                     refresh_token TEXT,
+                    tenant_id TEXT,
+                    client_secret TEXT,
                     access_token TEXT,
                     last_check_time TIMESTAMP,
                     enable_realtime_check BOOLEAN DEFAULT FALSE,
@@ -366,6 +372,8 @@ class Database:
                     use_ssl TINYINT(1) DEFAULT 1,
                     client_id TEXT,
                     refresh_token TEXT,
+                    tenant_id TEXT,
+                    client_secret TEXT,
                     access_token TEXT,
                     last_check_time TIMESTAMP NULL DEFAULT NULL,
                     enable_realtime_check TINYINT(1) DEFAULT 0,
@@ -606,7 +614,7 @@ class Database:
     def _ensure_sensitive_data_encrypted(self):
         try:
             cursor = self._execute(
-                "SELECT id, password, client_id, refresh_token, access_token FROM emails",
+                "SELECT id, password, client_id, refresh_token, access_token, client_secret FROM emails",
                 commit=False
             )
             rows = cursor.fetchall()
@@ -615,7 +623,7 @@ class Database:
                 if not row_dict:
                     continue
                 updates = {}
-                for field in ['password', 'client_id', 'refresh_token', 'access_token']:
+                for field in ['password', 'client_id', 'refresh_token', 'access_token', 'client_secret']:
                     value = row_dict.get(field)
                     if value and not self._is_encrypted(value):
                         updates[field] = self._encrypt_value(value)
@@ -670,7 +678,7 @@ class Database:
 
     def _decrypt_email_record(self, row: Any) -> Dict[str, Any]:
         record = self._row_to_dict(row) or {}
-        for field in ['password', 'client_id', 'refresh_token', 'access_token']:
+        for field in ['password', 'client_id', 'refresh_token', 'access_token', 'client_secret']:
             if field in record:
                 record[field] = self._decrypt_value(record[field])
         if 'use_ssl' in record and record['use_ssl'] is not None:
@@ -972,7 +980,22 @@ class Database:
         return users
 
     # 邮箱相关方法
-    def add_email(self, user_id, email, password, client_id=None, refresh_token=None, mail_type='outlook', server=None, port=None, use_ssl=True, status='unknown', status_message=None):
+    def add_email(
+        self,
+        user_id,
+        email,
+        password,
+        client_id=None,
+        refresh_token=None,
+        tenant_id=None,
+        client_secret=None,
+        mail_type='outlook',
+        server=None,
+        port=None,
+        use_ssl=True,
+        status='unknown',
+        status_message=None,
+    ):
         """添加新的邮箱账号"""
         try:
             # 日志输出详细信息，但隐藏敏感信息
@@ -996,18 +1019,22 @@ class Database:
             encrypted_password = self._encrypt_value(password) if password else None
             encrypted_client_id = self._encrypt_value(client_id) if client_id else None
             encrypted_refresh_token = self._encrypt_value(refresh_token) if refresh_token else None
+            encrypted_client_secret = self._encrypt_value(client_secret) if client_secret else None
+            normalized_tenant = (tenant_id or 'common').strip() or 'common'
             status_message_value = status_message
 
             # 根据邮箱类型处理SQL，默认启用实时检查
             if mail_type == 'outlook':
                 self._execute(
-                    "INSERT INTO emails (user_id, email, password, client_id, refresh_token, mail_type, enable_realtime_check, status, status_message, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                    "INSERT INTO emails (user_id, email, password, client_id, refresh_token, tenant_id, client_secret, mail_type, enable_realtime_check, status, status_message, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                     [
                         user_id,
                         email,
                         encrypted_password,
                         encrypted_client_id,
                         encrypted_refresh_token,
+                        normalized_tenant,
+                        encrypted_client_secret,
                         mail_type,
                         self._bool_value(True),
                         status,
@@ -1104,9 +1131,13 @@ class Database:
             for key, value in kwargs.items():
                 if key in {'use_ssl', 'enable_realtime_check', 'has_attachments', 'is_admin'} and value is not None:
                     value = self._bool_value(value)
-                if key in ['password', 'client_id', 'refresh_token', 'access_token'] and value is not None:
+                if key == 'tenant_id' and isinstance(value, str):
+                    value = value.strip() or 'common'
+                if key == 'client_secret' and isinstance(value, str):
+                    value = value.strip() or None
+                if key in ['password', 'client_id', 'refresh_token', 'access_token', 'client_secret'] and value is not None:
                     value = self._encrypt_value(value)
-                if key in {'email', 'password', 'client_id', 'refresh_token', 'server', 'port', 'use_ssl'}:
+                if key in {'email', 'password', 'client_id', 'refresh_token', 'client_secret', 'tenant_id', 'server', 'port', 'use_ssl'}:
                     reset_status = True
                 update_fields.append(f"{key} = ?")
                 params.append(value)
@@ -1149,21 +1180,33 @@ class Database:
             commit=True
         )
 
-    def update_email_token(self, email_id, access_token):
-        """更新Outlook邮箱的访问令牌"""
+    def update_email_tokens(self, email_id, access_token, refresh_token=None):
+        """更新Outlook邮箱的访问令牌及可选的刷新令牌"""
         logger.debug(f"更新邮箱访问令牌, ID: {email_id}")
         try:
-            encrypted_token = self._encrypt_value(access_token) if access_token else None
+            set_clause = ["access_token = ?", "updated_at = CURRENT_TIMESTAMP"]
+            params = [self._encrypt_value(access_token) if access_token else None]
+
+            if refresh_token is not None:
+                set_clause.insert(1, "refresh_token = ?")
+                params.append(self._encrypt_value(refresh_token) if refresh_token else None)
+
+            params.append(email_id)
+
             self._execute(
-                "UPDATE emails SET access_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [encrypted_token, email_id],
+                f"UPDATE emails SET {', '.join(set_clause)} WHERE id = ?",
+                params,
                 commit=True
             )
-            logger.info(f"成功更新邮箱 ID:{email_id} 的访问令牌")
+            logger.info(f"成功更新邮箱 ID:{email_id} 的令牌信息")
             return True
         except Exception as e:
-            logger.error(f"更新邮箱访问令牌失败, ID: {email_id}, 错误: {str(e)}")
+            logger.error(f"更新邮箱令牌失败, ID: {email_id}, 错误: {str(e)}")
             return False
+
+    def update_email_token(self, email_id, access_token):
+        """向后兼容的方法，仅更新访问令牌"""
+        return self.update_email_tokens(email_id, access_token)
 
     def update_email_status(self, email_id: int, status: str, message: Optional[str] = None) -> bool:
         """更新邮箱的状态信息"""

@@ -477,11 +477,14 @@ def get_all_emails(current_user):
 def add_email(current_user):
     """添加新邮箱"""
     data = request.json
-    email = data.get('email')
+    email = (data.get('email') or '').strip()
     password = data.get('password')
-    mail_type = data.get('mail_type', 'outlook')
+    mail_type = (data.get('mail_type') or 'outlook').lower()
 
-    if not email or not password:
+    if not email:
+        return jsonify({'error': '邮箱地址和密码是必需的'}), 400
+
+    if mail_type != 'outlook' and not password:
         return jsonify({'error': '邮箱地址和密码是必需的'}), 400
 
     # 根据不同邮箱类型验证参数并添加
@@ -500,15 +503,23 @@ def add_email(current_user):
     if mail_type == 'outlook':
         client_id = data.get('client_id')
         refresh_token = data.get('refresh_token')
+        tenant_id = data.get('tenant_id')
+        client_secret = data.get('client_secret')
 
         if not client_id or not refresh_token:
             return jsonify({'error': 'Outlook邮箱需要提供Client ID和Refresh Token'}), 400
+
+        normalized_tenant = (tenant_id or 'common').strip() or 'common'
+        normalized_secret = client_secret.strip() if isinstance(client_secret, str) else client_secret
+
         is_valid, validation_message = verify_email_credentials(
             mail_type,
             email,
             password=password,
             client_id=client_id,
-            refresh_token=refresh_token
+            refresh_token=refresh_token,
+            client_secret=normalized_secret,
+            tenant_id=normalized_tenant
         )
         if not is_valid:
             return _validation_failed(validation_message)
@@ -519,7 +530,9 @@ def add_email(current_user):
             password,
             client_id,
             refresh_token,
-            mail_type,
+            tenant_id=normalized_tenant,
+            client_secret=normalized_secret,
+            mail_type=mail_type,
             status='active',
             status_message=validation_message
         )
@@ -1090,6 +1103,10 @@ def update_email(current_user, email_id):
                 update_data['client_id'] = data.get('client_id')
             if data.get('refresh_token'):
                 update_data['refresh_token'] = data.get('refresh_token')
+            if 'tenant_id' in data:
+                update_data['tenant_id'] = data.get('tenant_id')
+            if 'client_secret' in data:
+                update_data['client_secret'] = data.get('client_secret')
         elif current_email['mail_type'] in ['imap', 'gmail', 'qq']:
             if data.get('server'):
                 update_data['server'] = data.get('server')

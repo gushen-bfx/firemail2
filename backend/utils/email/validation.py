@@ -2,7 +2,7 @@ import logging
 from typing import Optional, Tuple
 
 from .imap import IMAPMailHandler
-from .outlook import OutlookMailHandler
+from .outlook import OutlookMailHandler, OutlookOAuthError
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,9 @@ def verify_email_credentials(
     refresh_token: Optional[str] = None,
     server: Optional[str] = None,
     port: Optional[int] = None,
-    use_ssl: bool = True
+    use_ssl: bool = True,
+    client_secret: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """验证邮箱配置是否有效。
 
@@ -29,11 +31,20 @@ def verify_email_credentials(
             if not client_id or not refresh_token:
                 return False, 'Outlook邮箱需要提供Client ID和Refresh Token'
 
-            token = OutlookMailHandler.get_new_access_token(refresh_token, client_id)
-            if not token:
-                return False, '无法获取访问令牌，请检查Client ID和Refresh Token是否正确'
+            normalized_tenant = (tenant_id or 'common').strip() or 'common'
+            normalized_secret = client_secret.strip() if isinstance(client_secret, str) else client_secret
 
-            handler = OutlookMailHandler(email_address, token)
+            try:
+                token = OutlookMailHandler.acquire_token(
+                    refresh_token,
+                    client_id,
+                    tenant_id=normalized_tenant,
+                    client_secret=normalized_secret,
+                )
+            except OutlookOAuthError as exc:
+                return False, f'无法获取访问令牌: {exc}'
+
+            handler = OutlookMailHandler(email_address, token.access_token)
             if not handler.connect():
                 error_message = handler.error or '无法连接到Outlook服务器'
                 return False, error_message

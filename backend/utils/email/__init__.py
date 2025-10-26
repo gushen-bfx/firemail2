@@ -11,7 +11,7 @@ from .common import (
     parse_email_date,
     decode_email_content,
 )
-from .outlook import OutlookMailHandler
+from .outlook import OutlookMailHandler, OutlookOAuthError
 from .imap import IMAPMailHandler
 from .mail_processor import MailProcessor, EmailBatchProcessor
 from .file_parser import EmailFileParser
@@ -25,6 +25,7 @@ __all__ = [
     'parse_email_date',
     'decode_email_content',
     'OutlookMailHandler',
+    'OutlookOAuthError',
     'IMAPMailHandler',
     'MailProcessor',
     'EmailBatchProcessor',

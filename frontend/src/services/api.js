@@ -225,15 +225,7 @@ const apiMethods = {
     return api.get(`/emails/${id}`);
   },
 
-  addEmail: (email, password, clientId, refreshToken, mailType = 'outlook') => {
-    return api.post('/emails', {
-      email,
-      password,
-      client_id: clientId,
-      refresh_token: refreshToken,
-      mail_type: mailType
-    });
-  },
+  addEmail: (emailData) => api.post('/emails', emailData),
 
   updateEmail: (emailId, emailData) => {
     return api.put(`/emails/${emailId}`, emailData);

@@ -350,16 +350,23 @@ class WebSocketHandler:
         """处理添加邮箱的请求"""
         try:
             # 获取请求数据
-            email = data.get('email')
+            email = (data.get('email') or '').strip()
             password = data.get('password')
-            mail_type = data.get('mail_type', 'imap')  # 默认使用imap类型
+            mail_type = (data.get('mail_type') or 'imap').lower()  # 默认使用imap类型
             client_id = data.get('client_id')
             refresh_token = data.get('refresh_token')
             server = data.get('server')
             port = data.get('port')
             use_ssl = data.get('use_ssl', True)
 
-            if not email or not password:
+            if not email:
+                await websocket.send(json.dumps({
+                    'type': 'error',
+                    'message': '邮箱地址和密码不能为空'
+                }))
+                return
+
+            if mail_type != 'outlook' and not password:
                 await websocket.send(json.dumps({
                     'type': 'error',
                     'message': '邮箱地址和密码不能为空'
@@ -381,6 +388,9 @@ class WebSocketHandler:
 
             # 根据不同邮箱类型处理
             if mail_type == 'outlook':
+                tenant_id = data.get('tenant_id')
+                client_secret = data.get('client_secret')
+
                 if not client_id or not refresh_token:
                     await websocket.send(json.dumps({
                         'type': 'error',
@@ -388,12 +398,17 @@ class WebSocketHandler:
                     }))
                     return
 
+                normalized_tenant = (tenant_id or 'common').strip() or 'common'
+                normalized_secret = client_secret.strip() if isinstance(client_secret, str) else client_secret
+
                 is_valid, validation_message = verify_email_credentials(
                     mail_type,
                     email,
                     password=password,
                     client_id=client_id,
-                    refresh_token=refresh_token
+                    refresh_token=refresh_token,
+                    client_secret=normalized_secret,
+                    tenant_id=normalized_tenant
                 )
 
                 if not is_valid:
@@ -406,7 +421,9 @@ class WebSocketHandler:
                     password,
                     client_id,
                     refresh_token,
-                    mail_type,
+                    tenant_id=normalized_tenant,
+                    client_secret=normalized_secret,
+                    mail_type=mail_type,
                     status='active',
                     status_message=validation_message
                 )
@@ -641,13 +658,22 @@ class WebSocketHandler:
                         errors.append(f"格式错误: {line}")
                         continue
                     
-                    email = parts[0]
-                    password = parts[1]
-                    client_id = parts[2] if len(parts) > 2 else None
-                    refresh_token = parts[3] if len(parts) > 3 else None
-                    
-                    # 添加邮箱到数据库 - 确保参数顺序正确：user_id, email, password, client_id, refresh_token
-                    email_id = self.db.add_email(user_id, email, password, client_id, refresh_token)
+                    email = parts[0].strip()
+                    password = parts[1] if len(parts) > 1 else None
+                    client_id = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
+                    refresh_token = parts[3].strip() if len(parts) > 3 and parts[3].strip() else None
+                    tenant_id = parts[4].strip() if len(parts) > 4 and parts[4].strip() else None
+                    client_secret = parts[5].strip() if len(parts) > 5 and parts[5].strip() else None
+
+                    email_id = self.db.add_email(
+                        user_id,
+                        email,
+                        password,
+                        client_id,
+                        refresh_token,
+                        tenant_id=tenant_id,
+                        client_secret=client_secret,
+                    )
                     if email_id:
                         imported_count += 1
                     else:

@@ -1,50 +1,115 @@
-"""
-Outlook邮件处理模块
-"""
+"""Outlook 邮箱处理模块。"""
 
-import imaplib
+from __future__ import annotations
+
 import email
-import requests
+import imaplib
 import time
+from dataclasses import dataclass
+from typing import Callable, Iterable, Iterator, Optional, Tuple
+
+import requests
 
 from .common import (
     decode_mime_words,
-    normalize_check_time,
     format_date_for_imap_search,
+    normalize_check_time,
 )
 from .logger import logger
 
-class OutlookMailHandler:
-    """Outlook邮箱处理类"""
 
-    # Outlook常用文件夹映射
+class OutlookOAuthError(RuntimeError):
+    """在与 Microsoft OAuth 服务交互时抛出的异常。"""
+
+
+@dataclass
+class OutlookToken:
+    """Outlook OAuth2 访问令牌信息。"""
+
+    access_token: str
+    refresh_token: Optional[str] = None
+
+
+class OutlookMailHandler:
+    """封装与 Outlook/Hotmail 邮箱交互的逻辑。"""
+
     DEFAULT_FOLDERS = {
         'INBOX': ['inbox', 'Inbox', 'INBOX'],
         'SENT': ['sentitems', 'Sent Items', 'Sent', '已发送'],
         'DRAFTS': ['drafts', 'Drafts', '草稿箱'],
         'TRASH': ['deleteditems', 'Deleted Items', 'Trash', '已删除'],
         'SPAM': ['junkemail', 'Junk E-mail', 'Spam', '垃圾邮件'],
-        'ARCHIVE': ['archive', 'Archive', '归档']
+        'ARCHIVE': ['archive', 'Archive', '归档'],
     }
 
-    def __init__(self, email_address, access_token):
-        """初始化Outlook处理器"""
+    IMAP_HOSTS: Tuple[str, ...] = (
+        'outlook.office365.com',
+        'outlook.office.com',
+        'imap-mail.outlook.com',
+    )
+    TOKEN_ENDPOINT_TEMPLATE = 'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token'
+    DEFAULT_SCOPE = 'https://outlook.office365.com/.default offline_access'
+
+    def __init__(self, email_address: str, access_token: str, *, preferred_host: Optional[str] = None):
+        """初始化 Outlook 处理器。
+
+        Args:
+            email_address: 邮箱地址。
+            access_token: OAuth2 访问令牌。
+            preferred_host: 优先尝试的 IMAP 主机。
+        """
+
         self.email_address = email_address
         self.access_token = access_token
-        self.mail = None
-        self.error = None
+        self.mail: Optional[imaplib.IMAP4_SSL] = None
+        self.error: Optional[str] = None
+        self._preferred_host = preferred_host
 
-    def connect(self):
-        """连接到Outlook服务器"""
-        try:
-            self.mail = imaplib.IMAP4_SSL('outlook.live.com')
-            auth_string = OutlookMailHandler.generate_auth_string(self.email_address, self.access_token)
-            self.mail.authenticate('XOAUTH2', lambda x: auth_string)
-            return True
-        except Exception as e:
-            self.error = str(e)
-            logger.error(f"Outlook连接失败: {e}")
-            return False
+    # ------------------------------------------------------------------
+    # 连接与会话管理
+    # ------------------------------------------------------------------
+    def connect(self) -> bool:
+        """连接到 Outlook IMAP 服务器。"""
+
+        hosts = self._iter_hosts()
+        last_error: Optional[Exception] = None
+
+        for host in hosts:
+            try:
+                logger.debug("尝试使用主机 %s 连接 Outlook IMAP", host)
+                connection = imaplib.IMAP4_SSL(host)
+                auth_bytes = self.generate_auth_bytes(self.email_address, self.access_token)
+                connection.authenticate('XOAUTH2', lambda _: auth_bytes)
+                self.mail = connection
+                self.error = None
+                logger.info("成功连接到 Outlook IMAP 主机 %s", host)
+                return True
+            except Exception as exc:  # pragma: no cover - 网络/环境依赖
+                last_error = exc
+                logger.error("Outlook 连接失败 (%s): %s", host, exc)
+
+        if last_error:
+            self.error = str(last_error)
+        return False
+
+    def _iter_hosts(self) -> Iterator[str]:
+        """返回首选主机优先的迭代器。"""
+
+        yield from self._iter_hosts_static(self._preferred_host)
+
+    @classmethod
+    def _iter_hosts_static(cls, preferred_host: Optional[str] = None) -> Iterable[str]:
+        """返回 Outlook IMAP 主机列表，优先返回首选主机。"""
+
+        if preferred_host:
+            normalized = preferred_host.strip()
+            if normalized:
+                yield normalized
+
+        for host in cls.IMAP_HOSTS:
+            if preferred_host and host.strip().lower() == preferred_host.strip().lower():
+                continue
+            yield host
 
     def get_folders(self):
         """获取文件夹列表"""
@@ -140,44 +205,89 @@ class OutlookMailHandler:
             return []
 
     def close(self):
-        """关闭连接"""
-        if self.mail:
-            try:
-                self.mail.logout()
-            except:
-                pass
+        """关闭连接。"""
+
+        if not self.mail:
+            return
+
+        try:
+            self.mail.logout()
+        except Exception:  # pragma: no cover - 依赖外部服务器
+            pass
+        finally:
             self.mail = None
 
+    # ------------------------------------------------------------------
+    # OAuth 令牌
+    # ------------------------------------------------------------------
     @staticmethod
-    def get_new_access_token(refresh_token, client_id):
-        """刷新获取新的access_token"""
-        url = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
+    def acquire_token(
+        refresh_token: str,
+        client_id: str,
+        *,
+        tenant_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
+        timeout: int = 15,
+    ) -> OutlookToken:
+        """使用刷新令牌换取新的访问令牌。"""
+
+        tenant = (tenant_id or 'common').strip() or 'common'
+        url = OutlookMailHandler.TOKEN_ENDPOINT_TEMPLATE.format(tenant=tenant)
         data = {
             'client_id': client_id,
             'grant_type': 'refresh_token',
             'refresh_token': refresh_token,
         }
+
+        if client_secret:
+            data['client_secret'] = client_secret
+        else:
+            data['scope'] = OutlookMailHandler.DEFAULT_SCOPE
+
         try:
-            response = requests.post(url, data=data)
-            result_status = response.json().get('error')
-            if result_status is not None:
-                logger.error(f"获取访问令牌失败: {result_status}")
-                return None
-            else:
-                new_access_token = response.json()['access_token']
-                logger.info("成功获取新的访问令牌")
-                return new_access_token
-        except Exception as e:
-            logger.error(f"刷新令牌过程中发生异常: {str(e)}")
-            return None
+            response = requests.post(url, data=data, timeout=timeout)
+        except requests.RequestException as exc:  # pragma: no cover - 网络异常
+            logger.error("请求 Outlook 令牌失败: %s", exc)
+            raise OutlookOAuthError(f"请求令牌失败: {exc}") from exc
+
+        payload = {}
+        try:
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:  # pragma: no cover - 第三方响应异常
+            logger.error("解析 Outlook 令牌响应失败: %s", exc)
+            raise OutlookOAuthError("无法解析访问令牌响应") from exc
+
+        access_token = payload.get('access_token')
+        if not access_token:
+            error_description = payload.get('error_description') or payload.get('error')
+            logger.error("获取访问令牌失败: %s", error_description)
+            raise OutlookOAuthError(error_description or '无法获取访问令牌，请检查凭据')
+
+        refresh = payload.get('refresh_token')
+        if refresh and refresh != refresh_token:
+            logger.info("Outlook 返回了新的刷新令牌")
+
+        logger.info("成功获取新的访问令牌")
+        return OutlookToken(access_token=access_token, refresh_token=refresh)
 
     @staticmethod
-    def generate_auth_string(user, token):
-        """生成 OAuth2 授权字符串"""
-        return f"user={user}\1auth=Bearer {token}\1\1"
+    def generate_auth_bytes(user: str, token: str) -> bytes:
+        """生成 XOAUTH2 授权字节串。"""
 
+        return f"user={user}\1auth=Bearer {token}\1\1".encode('utf-8')
+
+    # ------------------------------------------------------------------
+    # 邮件同步
+    # ------------------------------------------------------------------
     @staticmethod
-    def fetch_emails(email_address, access_token, folder="inbox", callback=None, last_check_time=None):
+    def fetch_emails(
+        email_address,
+        access_token,
+        folder="inbox",
+        callback: Optional[Callable[[int, str], None]] = None,
+        last_check_time=None,
+    ):
         """
         通过IMAP协议获取Outlook/Hotmail邮箱中的邮件
 
@@ -215,14 +325,34 @@ class OutlookMailHandler:
                 callback(10, folder)
 
                 # 创建IMAP连接
-                mail = imaplib.IMAP4_SSL('outlook.live.com')
+                hosts = OutlookMailHandler._iter_hosts_static()
+                last_exc: Optional[Exception] = None
+                mail = None
 
-                # 使用OAuth2登录
-                auth_string = OutlookMailHandler.generate_auth_string(email_address, access_token)
-                mail.authenticate('XOAUTH2', lambda x: auth_string)
+                for host in hosts:
+                    try:
+                        logger.debug("连接 Outlook 主机 %s", host)
+                        mail = imaplib.IMAP4_SSL(host)
+                        auth_bytes = OutlookMailHandler.generate_auth_bytes(email_address, access_token)
+                        mail.authenticate('XOAUTH2', lambda _: auth_bytes)
+                        logger.debug("Outlook 主机 %s 认证成功", host)
+                        break
+                    except Exception as host_exc:  # pragma: no cover - 网络依赖
+                        last_exc = host_exc
+                        logger.warning("连接 Outlook 主机 %s 失败: %s", host, host_exc)
+                        if mail is not None:
+                            try:
+                                mail.logout()
+                            except Exception:
+                                pass
+                            mail = None
+
+                if mail is None:
+                    raise last_exc or RuntimeError('无法连接任何 Outlook IMAP 主机')
 
                 # 选择文件夹
-                mail.select('inbox')
+                target_folder = folder or 'inbox'
+                mail.select(target_folder)
                 callback(20, folder)
 
                 # 定义搜索条件
@@ -320,8 +450,9 @@ class OutlookMailHandler:
             finally:
                 # 确保关闭连接
                 try:
-                    mail.logout()
-                except:
+                    if mail is not None:
+                        mail.logout()
+                except Exception:  # pragma: no cover - 依赖外部服务器
                     pass
 
         return mail_records
@@ -333,6 +464,8 @@ class OutlookMailHandler:
         email_address = email_info['email']
         refresh_token = email_info['refresh_token']
         client_id = email_info['client_id']
+        tenant_id = email_info.get('tenant_id')
+        client_secret = email_info.get('client_secret')
 
         logger.info(f"开始检查Outlook邮箱: ID={email_id}, 邮箱={email_address}")
 
@@ -345,18 +478,26 @@ class OutlookMailHandler:
 
         try:
             # 获取新的访问令牌
-            access_token = OutlookMailHandler.get_new_access_token(refresh_token, client_id)
-            if not access_token:
-                error_msg = f"邮箱{email_address}(ID={email_id})获取访问令牌失败"
+            try:
+                token = OutlookMailHandler.acquire_token(
+                    refresh_token,
+                    client_id,
+                    tenant_id=tenant_id,
+                    client_secret=client_secret,
+                )
+            except OutlookOAuthError as oauth_error:
+                error_msg = f"邮箱{email_address}(ID={email_id})获取访问令牌失败: {oauth_error}"
                 logger.error(error_msg)
-                progress_callback(0, error_msg)
+                progress_callback(0, str(oauth_error))
                 return {
                     'success': False,
-                    'message': error_msg
+                    'message': str(oauth_error),
                 }
 
+            access_token = token.access_token
+
             # 更新令牌到数据库
-            db.update_email_token(email_id, access_token)
+            db.update_email_tokens(email_id, access_token, token.refresh_token)
 
             # 报告进度
             progress_callback(10, "开始获取邮件...")
@@ -373,7 +514,7 @@ class OutlookMailHandler:
                     email_address,
                     access_token,
                     "inbox",
-                    folder_progress_callback
+                    folder_progress_callback,
                 )
 
                 # 报告进度

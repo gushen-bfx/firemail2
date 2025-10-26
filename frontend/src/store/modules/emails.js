@@ -78,17 +78,12 @@ export const useEmailsStore = {
     },
 
     // 添加新邮箱
-    async addEmail({ commit }, { email, password, clientId, refreshToken }) {
+    async addEmail({ commit }, emailData) {
       try {
         if (WebSocketService.isConnected) {
-          return WebSocketService.addEmail(email, password, clientId, refreshToken);
+          return WebSocketService.addEmail(emailData);
         } else {
-          const response = await api.post('/emails', {
-            email,
-            password,
-            client_id: clientId,
-            refresh_token: refreshToken
-          });
+          const response = await api.post('/emails', emailData);
           commit('ADD_EMAIL', response.data);
           return response.data;
         }
