@@ -343,23 +343,49 @@ class IMAPMailHandler:
 
             if not mail_records:
                 if progress_callback:
-                    progress_callback(0, "没有找到新邮件")
-                return {'success': False, 'message': '没有找到新邮件'}
+                    progress_callback(100, "没有找到新邮件")
+                return {
+                    'success': True,
+                    'message': '没有找到新邮件',
+                    'total_emails': 0,
+                    'new_emails': 0,
+                    'duplicate_emails': 0,
+                    'has_new_emails': False,
+                }
 
             # 保存邮件记录
             saved_count = db.save_mail_records(email_info['id'], mail_records, progress_callback)
 
+            total_emails = len(mail_records)
+            duplicate_emails = max(total_emails - saved_count, 0)
+            summary_message = (
+                f"成功获取 {total_emails} 封邮件，新增 {saved_count} 封"
+                if saved_count
+                else f"成功获取 {total_emails} 封邮件，暂无新增"
+            )
+
             if progress_callback:
-                progress_callback(100, f"成功获取 {len(mail_records)} 封邮件，新增 {saved_count} 封")
+                progress_callback(100, summary_message)
 
             return {
                 'success': True,
-                'message': f'成功获取 {len(mail_records)} 封邮件，新增 {saved_count} 封'
+                'message': summary_message,
+                'total_emails': total_emails,
+                'new_emails': saved_count,
+                'duplicate_emails': duplicate_emails,
+                'has_new_emails': saved_count > 0,
             }
 
         except Exception as e:
             logger.error(f"检查邮件失败: {str(e)}")
             if progress_callback:
                 progress_callback(0, f"检查邮件失败: {str(e)}")
-            return {'success': False, 'message': str(e)}
+            return {
+                'success': False,
+                'message': str(e),
+                'total_emails': 0,
+                'new_emails': 0,
+                'duplicate_emails': 0,
+                'has_new_emails': False,
+            }
 
