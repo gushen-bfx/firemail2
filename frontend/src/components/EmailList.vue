@@ -276,10 +276,16 @@ const fetchEmails = async () => {
         'Authorization': `Bearer ${localStorage.getItem('token')}`
       }
     })
+
+    const result = await response.json()
+
     if (response.ok) {
-      emails.value = await response.json()
+      emails.value = Array.isArray(result?.data) ? result.data : []
+      if (result?.message) {
+        ElMessage.success(result.message)
+      }
     } else {
-      ElMessage.error('获取邮箱列表失败')
+      ElMessage.error(result?.message || '获取邮箱列表失败')
     }
   } catch (error) {
     console.error('获取邮箱列表失败:', error)
@@ -296,10 +302,18 @@ const checkEmail = async (emailId) => {
         'Authorization': `Bearer ${localStorage.getItem('token')}`
       }
     })
+    const result = await response.json()
+
     if (response.ok) {
-      ElMessage.success('开始检查邮件')
+      if (result?.success === false) {
+        ElMessage.error(result?.message || '检查邮件失败')
+      } else {
+        ElMessage.success(result?.message || '开始检查邮件')
+      }
+    } else if (response.status === 409) {
+      ElMessage.warning(result?.message || '邮箱正在处理中，请稍候...')
     } else {
-      ElMessage.error('检查邮件失败')
+      ElMessage.error(result?.message || '检查邮件失败')
     }
   } catch (error) {
     console.error('检查邮件失败:', error)

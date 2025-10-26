@@ -697,8 +697,12 @@ const hasSelectedEmails = computed(() => emailsStore.hasSelectedEmails)
 // 方法
 const refreshEmails = async () => {
   try {
-    await emailsStore.fetchEmails()
-    ElMessage.success('刷新成功')
+    const result = await emailsStore.fetchEmails()
+    if (result?.message) {
+      ElMessage.success(result.message)
+    } else {
+      ElMessage.success('刷新成功')
+    }
   } catch (error) {
     console.error('获取邮箱列表失败:', error)
     ElMessage.error('获取邮箱列表失败，请检查网络连接')
@@ -779,8 +783,10 @@ const handleCheck = async (row) => {
     // 检查结果，确定是否显示正在处理中的消息
     if (result && result.status === 'processing') {
       ElMessage.warning(result.message || '邮箱正在处理中，请稍候...')
+    } else if (result?.success === false) {
+      ElMessage.error(result?.message || `检查邮箱 ${row.email} 失败`)
     } else {
-      ElMessage.info(`正在检查邮箱 ${row.email} 的邮件，请稍候...`)
+      ElMessage.success(result?.message || `已完成邮箱 ${row.email} 的检查`)
     }
   } catch (error) {
     console.error('检查邮箱失败:', error)
@@ -805,8 +811,13 @@ const handleBatchCheck = async () => {
   }
 
   try {
-    await emailsStore.checkEmails(emailIds)
-    ElMessage.info(`正在检查 ${count} 个邮箱的邮件，请稍候...`)
+    const result = await emailsStore.checkEmails(emailIds)
+
+    if (result?.success === false) {
+      ElMessage.error(result?.message || `检查 ${count} 个邮箱失败`)
+    } else {
+      ElMessage.success(result?.message || `已提交 ${count} 个邮箱的检查请求`)
+    }
   } catch (error) {
     console.error('批量检查邮箱失败:', error)
     ElMessage.error('批量检查邮箱失败: ' + (error.message || '未知错误'))

@@ -229,7 +229,9 @@ export const useEmailsStore = defineStore('emails', {
         console.log('获取邮箱列表，WebSocket状态：', websocket.isConnected);
         if (!websocket.isConnected) {
           const response = await api.emails.getAll();
-          this.emails = response;
+          const emailsData = Array.isArray(response?.data) ? response.data : [];
+          this.emails = emailsData;
+          return response;
         } else {
           websocket.send('get_all_emails');
         }
@@ -301,20 +303,27 @@ export const useEmailsStore = defineStore('emails', {
         // 使用api对象调用，确保使用正确的基础URL
         console.log(`检查邮箱 ID:${emailId}`);
         const response = await api.emails.check([emailId]);
+        const result = response?.data;
 
-        // 处理响应
-        if (response.status === 409) {
-          // 邮箱正在处理中，这是正常状态，不抛出错误
-          console.log('邮箱正在处理中:', response.data);
-          return { success: false, message: response.data.message, status: 'processing' };
+        if (result && typeof result === 'object') {
+          return result;
         }
 
-        return true;
+        return {
+          success: true,
+          message: '检查任务已启动',
+          email_id: emailId
+        };
       } catch (error) {
         // 特殊处理409状态码（邮箱正在处理中）
         if (error.response && error.response.status === 409) {
           console.log('邮箱正在处理中:', error.response.data);
-          return { success: false, message: error.response.data.message, status: 'processing' };
+          return {
+            success: false,
+            message: error.response.data?.message || '邮箱正在处理中，请稍候...',
+            status: 'processing',
+            email_id: emailId
+          };
         }
 
         console.error('检查邮箱失败:', error);
@@ -333,10 +342,16 @@ export const useEmailsStore = defineStore('emails', {
 
       try {
         if (!websocket.isConnected) {
-          await api.emails.check(emailIds);
-        } else {
-          websocket.send('check_emails', { email_ids: emailIds });
+          const response = await api.emails.check(emailIds);
+          return response?.data;
         }
+
+        websocket.send('check_emails', { email_ids: emailIds });
+        return {
+          success: true,
+          message: `已提交 ${emailIds.length} 个邮箱的检查请求`,
+          email_ids: emailIds
+        };
       } catch (error) {
         this.error = '检查邮箱失败';
         throw error;

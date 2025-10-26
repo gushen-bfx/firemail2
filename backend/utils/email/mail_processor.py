@@ -293,7 +293,12 @@ class EmailBatchProcessor:
     def _check_email_task(self, email_info, callback=None):
         """检查单个邮箱的邮件"""
         email_id = email_info['id']
-        result = {'success': False, 'message': '邮箱检查未完成'}
+        def finalize(result_dict):
+            result_dict.setdefault('email_id', email_id)
+            result_dict.setdefault('email', email_info.get('email'))
+            return result_dict
+
+        result = finalize({'success': False, 'message': '邮箱检查未完成'})
         try:
             # 标记为正在处理
             with self.lock:
@@ -321,7 +326,7 @@ class EmailBatchProcessor:
                     error_msg = "缺少OAuth2.0认证信息"
                     if callback:
                         callback(0, error_msg)
-                    result = {'success': False, 'message': error_msg}
+                    result = finalize({'success': False, 'message': error_msg})
                     return result
 
                 try:
@@ -336,7 +341,7 @@ class EmailBatchProcessor:
                         error_msg = f"获取访问令牌失败: {oauth_error}"
                         if callback:
                             callback(0, error_msg)
-                        result = {'success': False, 'message': error_msg}
+                        result = finalize({'success': False, 'message': error_msg})
                         return result
 
                     access_token = token.access_token
@@ -363,17 +368,17 @@ class EmailBatchProcessor:
                         if callback:
                             callback(100, "没有找到新邮件")
                         self.update_check_time(self.db, email_id)
-                        result = {'success': True, 'message': '没有找到新邮件'}
+                        result = finalize({'success': True, 'message': '没有找到新邮件'})
                         return result
 
                     saved_count = self.save_mail_records(self.db, email_id, mail_records, callback)
                     self.update_check_time(self.db, email_id)
                     log_email_complete(email_info['email'], email_id, len(mail_records), len(mail_records), saved_count)
 
-                    result = {
+                    result = finalize({
                         'success': True,
                         'message': f'成功获取{len(mail_records)}封邮件，新增{saved_count}封'
-                    }
+                    })
                     return result
 
                 except Exception as e:
@@ -381,19 +386,21 @@ class EmailBatchProcessor:
                     log_email_error(email_info['email'], email_id, error_msg)
                     if callback:
                         callback(0, error_msg)
-                    result = {'success': False, 'message': error_msg}
+                    result = finalize({'success': False, 'message': error_msg})
                     return result
 
             elif mail_type == 'gmail':
                 result = GmailHandler.check_mail(email_info, self.db, callback)
                 if result.get('success', False):
                     self.update_check_time(self.db, email_id)
+                result = finalize(result)
                 return result
 
             elif mail_type == 'qq':
                 result = QQMailHandler.check_mail(email_info, self.db, callback)
                 if result.get('success', False):
                     self.update_check_time(self.db, email_id)
+                result = finalize(result)
                 return result
 
             else:
@@ -414,17 +421,17 @@ class EmailBatchProcessor:
                         if callback:
                             callback(100, "没有找到新邮件")
                         self.update_check_time(self.db, email_id)
-                        result = {'success': True, 'message': '没有找到新邮件'}
-                        return result
+                    result = finalize({'success': True, 'message': '没有找到新邮件'})
+                    return result
 
                     saved_count = self.save_mail_records(self.db, email_id, mail_records, callback)
                     self.update_check_time(self.db, email_id)
                     log_email_complete(email_info['email'], email_id, len(mail_records), len(mail_records), saved_count)
 
-                    result = {
+                    result = finalize({
                         'success': True,
                         'message': f'成功获取 {len(mail_records)} 封邮件，新增 {saved_count} 封'
-                    }
+                    })
                     return result
 
                 except Exception as e:
@@ -432,7 +439,7 @@ class EmailBatchProcessor:
                     log_email_error(email_info['email'], email_id, error_msg)
                     if callback:
                         callback(0, error_msg)
-                    result = {'success': False, 'message': error_msg}
+                    result = finalize({'success': False, 'message': error_msg})
                     return result
 
         except Exception as e:
@@ -440,7 +447,7 @@ class EmailBatchProcessor:
             log_email_error(email_info['email'], email_id, error_msg)
             if callback:
                 callback(0, error_msg)
-            result = {'success': False, 'message': error_msg}
+            result = finalize({'success': False, 'message': error_msg})
             return result
 
         finally:

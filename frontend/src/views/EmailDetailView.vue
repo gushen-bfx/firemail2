@@ -345,9 +345,21 @@ const formatFileSize = (bytes) => {
 }
 
 // 收取邮件
-const checkEmail = () => {
-  emailsStore.checkEmail(emailId.value)
-  ElMessage.success('开始收取邮件')
+const checkEmail = async () => {
+  try {
+    const result = await emailsStore.checkEmail(emailId.value)
+
+    if (result?.status === 'processing') {
+      ElMessage.warning(result?.message || '邮箱正在处理中，请稍候...')
+    } else if (result?.success === false) {
+      ElMessage.error(result?.message || '收取邮件失败')
+    } else {
+      ElMessage.success(result?.message || '开始收取邮件')
+    }
+  } catch (error) {
+    console.error('收取邮件失败:', error)
+    ElMessage.error('收取邮件失败')
+  }
 }
 
 // 确认删除邮箱

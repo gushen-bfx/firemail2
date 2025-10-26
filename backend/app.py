@@ -470,7 +470,15 @@ def get_all_emails(current_user):
     else:
         emails = db.get_all_emails(current_user['id'])
 
-    return jsonify([dict(email) for email in emails])
+    email_list = [dict(email) for email in emails]
+    message = '获取邮箱列表成功' if email_list else '暂无邮箱数据'
+
+    return jsonify({
+        'success': True,
+        'message': message,
+        'total': len(email_list),
+        'data': email_list
+    })
 
 @app.route('/api/emails', methods=['POST'])
 @token_required
@@ -643,7 +651,8 @@ def check_email(current_user, email_id):
             return jsonify({
                 'success': False,
                 'message': '邮箱正在处理中，请稍后再试',
-                'status': 'processing'
+                'status': 'processing',
+                'email_id': email_id
             }), 409
 
         # 创建进度回调
@@ -676,14 +685,16 @@ def check_email(current_user, email_id):
         logger.error(f"检查邮箱超时: {email_id}")
         return jsonify({
             'success': False,
-            'message': '检查邮箱超时，请稍后再试'
+            'message': '检查邮箱超时，请稍后再试',
+            'email_id': email_id
         }), 408
 
     except Exception as e:
         logger.error(f"检查邮箱失败: {str(e)}")
         return jsonify({
             'success': False,
-            'message': f'检查邮箱失败: {str(e)}'
+            'message': f'检查邮箱失败: {str(e)}',
+            'email_id': email_id
         }), 500
 
 @app.route('/api/emails/batch_check', methods=['POST'])

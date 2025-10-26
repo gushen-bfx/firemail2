@@ -188,7 +188,9 @@ class WebSocketHandler:
             # 发送响应
             await websocket.send(json.dumps({
                 'type': 'emails_list',
-                'data': emails_list
+                'data': emails_list,
+                'message': '获取邮箱列表成功' if emails_list else '暂无邮箱数据',
+                'total': len(emails_list)
             }))
             
             logger.info(f"发送邮箱列表给用户ID: {user_id}")
@@ -286,7 +288,8 @@ class WebSocketHandler:
             # 发送开始检查的消息
             await websocket.send(json.dumps({
                 'type': 'success',
-                'message': f'开始检查 {len(valid_ids)} 个邮箱'
+                'message': f'开始检查 {len(valid_ids)} 个邮箱',
+                'email_ids': valid_ids
             }))
             
             logger.info(f"开始检查邮箱: {valid_ids} (用户ID: {user_id})")
